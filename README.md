@@ -86,11 +86,12 @@ NidarFiles/
 │       └── test_hover_logic.py
 ├── scripts/
 │   ├── jetson/  setup_jetson.sh, check_jetson.sh, start_jetson.sh
-│   └── gcs/     start_gcs.ps1, make_jetson_bundle.ps1 (USB stick), deploy_to_jetson.ps1 (SSH, needs a network)
+│   └── gcs/     start_gcs.ps1, make_jetson_bundle.ps1 (USB pen drive), deploy_to_jetson.ps1 (SSH, needs a network)
 └── README.md
 ```
 
-`missions/` and `scripts/` are not inside either git repository yet.
+Published as one repository: https://github.com/kp00004/NidarFiles (a plain
+copy -- not linked to the TeamArdra `custom-gcs` / `onboard-autonomy` repos).
 
 ### What changed in the repos (branch `feature/hover-radio`)
 
@@ -129,7 +130,7 @@ Laptop ──USB── MicroLR900  )))  MicroLR900 ──USB (CP2102)── Jets
                                                  (fallback /dev/ttyUSB0), 115200
 Jetson  192.168.144.1/24 on eno1   ◀──MAVLink2 UDP──▶   Pixhawk 192.168.144.14:14550 (UDP server)
 No Wi-Fi: the Jetson is operated with a monitor and keyboard, and code
-reaches it on a USB stick (A.1).
+reaches it from GitHub with `git clone` / `git pull` (A.1).
 ```
 
 Radio configuration in use: 115200 baud, DUPLEX, HIGH rate, MAX power,
@@ -144,25 +145,28 @@ address 1000, channel 0. Indoor position/altitude sensors: see section B.
 
 ## A. Setup and running
 
-### 1. Copy the code to the Jetson (USB stick)
+### 1. Get the code onto the Jetson (GitHub)
 
-On the laptop, with the USB stick plugged in (here as `E:`):
-
-```powershell
-cd D:\NidarFiles
-.\scripts\gcs\make_jetson_bundle.ps1 -Destination E:\
-```
-
-On the Jetson (monitor + keyboard), with the stick plugged in:
+The code is published at **https://github.com/kp00004/NidarFiles** (public).
+On the Jetson (monitor + keyboard), with internet for this step only:
 
 ```bash
-ls /media/$USER/                                  # find the stick's name
-rm -rf ~/NidarFiles && cp -r /media/$USER/<stick>/NidarFiles ~/
+mv ~/NidarFiles ~/NidarFiles.old 2>/dev/null     # keep any older copy aside
+git clone https://github.com/kp00004/NidarFiles.git ~/NidarFiles
 chmod +x ~/NidarFiles/scripts/jetson/*.sh ~/NidarFiles/missions/hover/mission.py
 ```
 
-(`deploy_to_jetson.ps1` does the same over SSH if the laptop and Jetson
-ever share a network.)
+**Updating later:** after new code is pushed to GitHub, on the Jetson:
+
+```bash
+git -C ~/NidarFiles pull
+~/NidarFiles/scripts/jetson/setup_jetson.sh      # rebuilds ~/nidar_ws
+```
+
+Without internet on the Jetson: `scripts/gcs/make_jetson_bundle.ps1
+-Destination E:\` copies the same files to a USB pen drive; on the Jetson
+copy `/media/$USER/<drive>/NidarFiles` to `~/`. (`deploy_to_jetson.ps1`
+does it over SSH if the laptop and Jetson ever share a network.)
 
 ### 2. One-time Jetson setup
 
