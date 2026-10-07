@@ -1,10 +1,10 @@
 # NidarFiles — NIDAR AirMouse: radio START → real hover
 
-> **Status (2026-10-07): radio-only (no Wi-Fi link). Radio START/ABORT and
-> telemetry PASSED on the real hardware in dry-run. NOT yet tested: Motor
-> Test on the motors, and any flight.** The hover cannot fly until the
-> Pixhawk has an indoor position estimate (section B item 1). Section B
-> lists what must be configured and verified before the first flight.
+> **Status (2026-10-08): radio-only (no Wi-Fi link). On the real hardware:
+> radio START/ABORT, telemetry, ARM via radio START, and the Jetson-set EKF
+> origin all work. Current blocker: the EKF keeps dropping the optical flow
+> (MTF-01) on the ground, so ArduCopter refuses to arm in GUIDED.** No
+> flight yet. See "Where we stopped" at the end of this file.
 
 ## What this is
 
@@ -305,8 +305,10 @@ for either mission while the other one is running (`MISSION_BUSY`).
 | Backend live smoke test, no radio attached | PASSED: START/ABORT refused with 503, nothing claimed sent |
 | RF link Jetson ↔ laptop (dry-run, 2026-10-07) | **PASSED on hardware**: START/ABORT ACKed on the 1st attempt; telemetry (FCU state, battery, attitude) live over the radio; radio unplug/replug recovered by itself |
 | Jetson nodes on ROS 2 / MAVROS (radio node, hover node) | **PASSED on hardware** (start-up, MAVROS connected, stream rates confirmed) |
-| Motor Test via this code | **NOT TESTED** |
-| Pixhawk GUIDED / ARM / TAKEOFF / LAND via this code | **NOT TESTED** |
+| Motor Test via this code | **NOT TESTED** (not run yet) |
+| ARM via radio START (props off, 2026-10-07) | **PASSED on hardware**: GUIDED → ARM accepted and confirmed; TAKEOFF then refused (no EKF origin) and the hover node crashed while logging it -- both fixed |
+| EKF origin set by the Jetson (2026-10-08) | **PASSED on hardware**: preflight passed with the origin set |
+| GUIDED / TAKEOFF / LAND via this code | **NOT TESTED**: ARM refused (result 4) while the EKF kept dropping optical-flow aiding |
 | End-to-end START → hover | **NOT TESTED** |
 | Flight | **NOT TESTED** |
 
@@ -370,3 +372,42 @@ not met.
 5. **First hover — props ON, tethered/netted, safety pilot ready, explicit go/no-go first:**
    START → takeoff to 0.5 m → 10 s hold → LAND → disarm. Then repeat with an
    in-air ABORT.
+
+## Where we stopped (2026-10-08)
+
+**Hardware state**
+- MicoAir **MTF-01** (optical flow + rangefinder) on Pixhawk **TELEM1**,
+  configured through ArduPilot serial passthrough (MicoAssistant):
+  `Mav_APM`, `mav_id 200`. Pixhawk: `SERIAL1_PROTOCOL=1`, `SERIAL1_BAUD=115`,
+  `SERIAL1_OPTIONS=1024`, `FLOW_TYPE=5`, `RNGFND1_TYPE=10`,
+  `RNGFND1_ORIENT=25`, `EK3_SRC1_POSXY=0`, `EK3_SRC1_VELXY=5`,
+  `EK3_SRC1_POSZ=1`, `EK3_SRC1_YAW=1`. Rangefinder reading confirmed live.
+- ModemManager disabled on the Jetson. `eno1` address still runtime-only
+  (`start_jetson.sh` restores it).
+
+**Blocker:** on a live Hover START, ArduCopter refused to ARM (result 4)
+while the status text cycled `EKF3 IMU0 started relative aiding` /
+`stopped aiding` / `fusing optical flow` -- the EKF keeps losing the flow
+sensor, most likely because the drone sits on the floor (sensor too close,
+or floor without texture/light). Local position z also read 1.43 m on the
+ground (baro drift).
+
+**Next steps (props off throughout)**
+1. Get the exact refusal: `grep -E "PreArm|Arm:|EKF|flow" <latest log>/mavros.log`.
+2. In Mission Planner (Jetson stack stopped), Status tab: `opt_qua` and
+   `rangefinder1` on the floor vs held 30-50 cm up, on a textured surface
+   in good light. Read `EK3_FLOW_USE`, `FLOW_ORIENT_YAW`, `FLOW_FXSCALER`,
+   `FLOW_FYSCALER`, `RNGFND1_GNDCLEAR`, `ARMING_CHECK`.
+3. Likely fixes: `RNGFND1_GNDCLEAR` (sensor height when landed), a
+   textured take-off mat, mounting height; then flow calibration
+   (`FLOW_FXSCALER/FYSCALER`, `FLOW_ORIENT_YAW`).
+4. Run the **Motor Test** mission (props off) -- not run yet.
+5. Manual hover in AltHold/Loiter on the RC transmitter to validate the flow.
+6. Only then our Hover mission: tethered, low, safety pilot ready.
+
+**Code workflow:** edit in `D:\NidarFiles`; the GitHub copy is
+`D:\NidarFiles-github` (https://github.com/kp00004/NidarFiles), updated by
+copying the changes there and pushing. On the Jetson: `git pull`, then
+`setup_jetson.sh` when `onboard-autonomy` changed. The `custom-gcs` and
+`onboard-autonomy` folders in `D:\NidarFiles` are also the TeamArdra git
+repos (branch `feature/hover-radio`); none of this work is committed there.
