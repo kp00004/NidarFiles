@@ -104,6 +104,14 @@ class MotorTestMission:
         self.detail = "operator ABORT -- motors stopped"
         return [] if motor is None else [self._stop(motor)]
 
+    def internal_error(self, now: float, reason: str) -> List[Action]:
+        """The node hit an unexpected error (a bug): stop the running motor
+        and end the test. Safe to call repeatedly."""
+        if self.state in TERMINAL_STATES:
+            self.detail = reason
+            return []
+        return self._fail(now, reason)
+
     # -- periodic ---------------------------------------------------------------
 
     def tick(self, now: float, snap: VehicleSnapshot) -> List[Action]:

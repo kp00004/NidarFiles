@@ -137,3 +137,11 @@ def test_status_shape():
     assert status["scenario"] == "motor_test" and status["state"] == TESTING
     assert status["current_motor"] == 1 and status["motor_count"] == 4
     assert status["elapsed_motor_s"] == 2.0 and status["execution_mode"] == "real"
+
+
+def test_internal_error_stops_the_running_motor():
+    m, _ = started()
+    actions = m.internal_error(1.0, "internal error in tick: ValueError()")
+    assert actions == [Action("motor_stop", 1, 0.0, 0.0)]
+    assert m.state == FAILED
+    assert m.internal_error(1.1, "again") == []  # repeated: nothing new

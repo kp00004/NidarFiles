@@ -236,3 +236,41 @@ class TestLanding:
         m.tick(t + 13, at_height(0.0, mode=LAND, armed=False))
         assert m.state == COMPLETE
         assert m.start(t + 20, snap(mode=LAND)) == [Action("set_mode", GUIDED)]
+
+
+# -- internal error (node bug) -------------------------------------------------
+
+
+def test_internal_error_while_taking_off_lands():
+    m = HoverMission(CFG)
+    m.start(0.0, snap(mode=GUIDED))
+    m.on_result(0.1, "arm", True, "ok")
+    m.tick(0.2, at_height(0.0))
+    assert m.state == TAKING_OFF
+    actions = m.internal_error(0.3, "internal error in takeoff result: ValueError()")
+    assert actions == [Action("set_mode", LAND)]
+    assert m.state == LANDING and "landing" in m.detail
+
+
+def test_internal_error_while_arming_disarms():
+    m = HoverMission(CFG)
+    m.start(0.0, snap(mode=GUIDED))
+    assert m.state == ARMING
+    assert m.internal_error(0.1, "boom") == [Action("disarm")]
+    assert m.state == FAILED
+
+
+def test_internal_error_when_idle_commands_nothing():
+    m = HoverMission(CFG)
+    assert m.internal_error(0.0, "boom") == []
+    assert m.state == IDLE
+
+
+def test_internal_error_while_landing_keeps_landing():
+    m = HoverMission(CFG)
+    m.start(0.0, snap(mode=GUIDED))
+    m.on_result(0.1, "arm", True, "ok")
+    m.tick(0.2, at_height(0.0))
+    m.internal_error(0.3, "first")
+    assert m.internal_error(0.4, "again") == []
+    assert m.state == LANDING

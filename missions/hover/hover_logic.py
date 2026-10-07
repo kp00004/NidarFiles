@@ -142,6 +142,27 @@ class HoverMission:
         self.detail = "operator ABORT -- already landing"
         return []
 
+    def internal_error(self, now: float, reason: str) -> List[Action]:
+        """The node hit an unexpected error (a bug). Treated as a failure:
+        nothing new is started; on the ground before takeoff -> disarm;
+        airborne -> LAND. Safe to call repeatedly."""
+        if self.state in TERMINAL_STATES:
+            self.detail = reason
+            return []
+        if self.state in (PREFLIGHT, SETTING_GUIDED):
+            self.state = FAILED
+            self.detail = reason
+            return []
+        if self.state == ARMING:
+            self.state = FAILED
+            self.detail = f"{reason} -- disarming on the ground"
+            return [Action("disarm")]
+        if self.state in (TAKING_OFF, HOVERING):
+            return self._land(now, f"{reason} -- landing", FAILED)
+        self._outcome = FAILED  # LANDING: keep descending
+        self.detail = f"{reason} -- already landing"
+        return []
+
     # -- periodic ---------------------------------------------------------------
 
     def tick(self, now: float, snap: VehicleSnapshot) -> List[Action]:

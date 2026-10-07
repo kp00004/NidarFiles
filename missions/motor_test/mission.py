@@ -31,6 +31,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -62,6 +63,7 @@ CONFIG = MotorTestConfig(
 )
 
 _SELECTION_MAX_AGE_S = 5.0
+_LAST_RESORT = " -- each motor stops by itself within its timeout; use the RC kill switch if needed"
 
 
 def _now() -> str:
@@ -77,11 +79,11 @@ class MotorTestNode(Node):
         self._selection = None  # (mission_id, monotonic time)
         self._last_logged = (self._mission.state, self._mission.detail)
 
-        self.create_subscription(String, MISSION_SELECT_TOPIC, self._on_select, 10)
-        self.create_subscription(String, VALIDATED_COMMAND_TOPIC, self._on_command, 10)
+        self.create_subscription(String, MISSION_SELECT_TOPIC, self._guarded("selection", self._on_select), 10)
+        self.create_subscription(String, VALIDATED_COMMAND_TOPIC, self._guarded("command", self._on_command), 10)
         self._status_pub = self.create_publisher(String, MOTOR_TEST_STATUS_TOPIC, 10)
-        self.create_timer(0.1, self._tick)
-        self.create_timer(0.5, self._publish_status)
+        self.create_timer(0.1, self._guarded("tick", self._tick))
+        self.create_timer(0.5, self._guarded("status", self._publish_status))
 
         self.get_logger().warning(
             f"[{_now()}] motor test mission ready (PROPS OFF): {CONFIG.motor_count} motors, "
@@ -135,14 +137,48 @@ class MotorTestNode(Node):
                 f"[{_now()}] action: {action.kind} motor {action.motor} "
                 f"{action.throttle_pct:.0f}% {action.timeout_s:.1f} s"
             )
-            done = lambda ok, detail, a=action: self._on_result(a, ok, detail)  # noqa: E731
+            done = lambda ok, detail, a=action: self._guarded(  # noqa: E731
+                f"{a.kind} result", self._on_result
+            )(a, ok, detail)
             self._vehicle.motor_test(action.motor, action.throttle_pct, action.timeout_s, done)
 
     def _on_result(self, action, ok: bool, detail: str) -> None:
-        log = self.get_logger().info if ok else self.get_logger().error
-        log(f"[{_now()}] {action.kind} motor {action.motor} {'OK' if ok else 'FAILED'}: {detail}")
+        # Separate call sites per severity: rclpy raises if one logging
+        # call site is used with different severities.
+        if ok:
+            self.get_logger().info(f"[{_now()}] {action.kind} motor {action.motor} OK: {detail}")
+        else:
+            self.get_logger().error(f"[{_now()}] {action.kind} motor {action.motor} FAILED: {detail}")
         with self._lock:
             self._run(self._mission.on_result(time.monotonic(), action.kind, action.motor, ok, detail))
+
+    # -- crash safety net -------------------------------------------------------
+
+    def _guarded(self, where: str, callback):
+        """Wraps a ROS callback: an unexpected exception (a bug) is logged
+        and handled like a mission failure via internal_error() -- the
+        node keeps running and the vehicle is made safe -- instead of
+        killing the node and leaving the vehicle with nobody in charge."""
+
+        def wrapper(*args):
+            try:
+                callback(*args)
+            except Exception as exc:  # noqa: BLE001 -- last line of defence
+                self.get_logger().error(
+                    f"[{_now()}] INTERNAL ERROR in {where}: {exc!r}\n{traceback.format_exc()}"
+                )
+                try:
+                    with self._lock:
+                        actions = self._mission.internal_error(
+                            time.monotonic(), f"internal error in {where}: {exc!r}"
+                        )
+                        self._run(actions)
+                except Exception as exc2:  # noqa: BLE001
+                    self.get_logger().error(
+                        f"[{_now()}] could not make the vehicle safe after the error: {exc2!r}{_LAST_RESORT}"
+                    )
+
+        return wrapper
 
     def _log_change(self) -> None:
         current = (self._mission.state, self._mission.detail)
