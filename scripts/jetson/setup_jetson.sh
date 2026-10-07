@@ -45,7 +45,9 @@ if [ ${#MISSING[@]} -eq 0 ]; then
   echo "   all installed"
 else
   echo "   missing: ${MISSING[*]} (needs internet)"
-  sudo apt-get update
+  # One broken third-party apt source makes `apt-get update` fail as a whole;
+  # the install below still works from the sources that did update.
+  sudo apt-get update || echo "   WARNING: apt-get update reported errors (see above) -- trying the install anyway"
   sudo apt-get install -y "${MISSING[@]}"
 fi
 
