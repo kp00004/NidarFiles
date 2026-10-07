@@ -11,7 +11,7 @@ import.
     Jetson --COMMAND_ACK--> GCS
         result MAV_RESULT, progress = reason code, result_param2 = nonce
     Jetson --HEARTBEAT (1 Hz)--> GCS
-        custom_mode = mission state code
+        custom_mode = (mission code << 8) | mission state code
 
 Telemetry, Jetson -> GCS (there is no Wi-Fi link; see app/radio_telemetry.py):
     from 1/191  HEARTBEAT (mission state), STATUSTEXT (hover mission detail),
@@ -61,8 +61,12 @@ MISSION_STATE_NAMES = {
     8: "aborted",
     9: "failed",
     10: "pilot_override",
+    11: "testing",
     255: "unknown",
 }
+
+# Heartbeat high byte -> mission id (app/missions.py radio codes). 0 = none known.
+MISSION_NAMES_BY_CODE = {1: "hover", 2: "motor_test"}
 
 MAV_MODE_FLAG_GUIDED_ENABLED = 8
 MAV_MODE_FLAG_SAFETY_ARMED = 128

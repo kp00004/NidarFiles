@@ -18,6 +18,18 @@ import type { FlightTestStatusResponse, Mission, RadioStatusResponse, TelemetryR
 
 const POLL_INTERVAL_MS = 1000;
 
+// What START does, per mission -- shown under the buttons for the mission
+// selected in the dropdown.
+const MISSION_WARNINGS: Record<string, string> = {
+  hover:
+    "REAL FLIGHT. START (Hover) makes the Jetson put the vehicle in GUIDED, arm, take off, hover and land. " +
+    "ABORT while airborne commands LAND. Keep the RC transmitter in hand as the independent override.",
+  motor_test:
+    "PROPS OFF. START (Motor Test) spins each motor in turn (A, B, C, D) at low throttle for a few seconds. " +
+    "ABORT stops the motors immediately.",
+};
+const DEFAULT_WARNING = "REAL HARDWARE. START runs the selected mission on the vehicle. Keep the RC transmitter in hand.";
+
 type Outcome = { ok: boolean; text: string } | null;
 
 function radioSummary(radio: RadioStatusResponse | null): { text: string; className: string } {
@@ -169,7 +181,11 @@ export default function ControlsPanel({ telemetry }: { telemetry: TelemetryRespo
         <Row label="Command radio">
           <span className={link.className}>{link.text}</span>
         </Row>
-        <Row label="Mission (radio)">{radio?.jetson_link_up ? radio.jetson_mission_state ?? "—" : "—"}</Row>
+        <Row label="Mission (radio)">
+          {radio?.jetson_link_up
+            ? `${radio.jetson_mission ? `${radio.jetson_mission} · ` : ""}${radio.jetson_mission_state ?? "—"}`
+            : "—"}
+        </Row>
         <Row label="Mission status">
           {mission?.state ? `${mission.state}${mission.execution_mode ? ` [${mission.execution_mode}]` : ""}` : "—"}
         </Row>
@@ -184,8 +200,7 @@ export default function ControlsPanel({ telemetry }: { telemetry: TelemetryRespo
       </div>
 
       <div className="mt-2.5 px-2.5 py-2 bg-warn/10 border border-warn/40 rounded-md text-warn text-xs font-semibold">
-        REAL FLIGHT. START (Hover) makes the Jetson put the vehicle in GUIDED, arm, take off, hover and land.
-        ABORT while airborne commands LAND. Keep the RC transmitter in hand as the independent override.
+        {(selected && MISSION_WARNINGS[selected.id]) ?? DEFAULT_WARNING}
       </div>
     </Panel>
   );

@@ -36,6 +36,7 @@ from .radio_protocol import (
     MAV_CMD_USER_1,
     MAV_RESULT_ACCEPTED,
     MAX_NONCE,
+    MISSION_NAMES_BY_CODE,
     MISSION_STATE_NAMES,
     NIDAR_ABORT,
     NIDAR_MAGIC,
@@ -106,6 +107,7 @@ class RadioLink:
         self._pending_lock = threading.Lock()
         self._jetson_heartbeat_at: Optional[float] = None
         self._jetson_state_code: Optional[int] = None
+        self._jetson_mission: Optional[str] = None
         self._last_command: Optional[RadioResult] = None
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -195,7 +197,8 @@ class RadioLink:
         kind = msg.get_type()
         if kind == "HEARTBEAT":
             self._jetson_heartbeat_at = time.monotonic()
-            self._jetson_state_code = msg.custom_mode
+            self._jetson_state_code = msg.custom_mode & 0xFF
+            self._jetson_mission = MISSION_NAMES_BY_CODE.get((msg.custom_mode >> 8) & 0xFF)
         elif kind == "COMMAND_ACK" and msg.command == MAV_CMD_USER_1:
             with self._pending_lock:
                 waiter = self._pending.get(msg.result_param2)
@@ -282,6 +285,7 @@ class RadioLink:
                 if self._jetson_state_code is None
                 else MISSION_STATE_NAMES.get(self._jetson_state_code, "unknown")
             ),
+            "jetson_mission": self._jetson_mission,
             "last_command": None if self._last_command is None else asdict(self._last_command),
         }
 
@@ -309,5 +313,6 @@ class DisabledRadioLink:
             "jetson_link_up": False,
             "jetson_heartbeat_age_s": None,
             "jetson_mission_state": None,
+            "jetson_mission": None,
             "last_command": None,
         }

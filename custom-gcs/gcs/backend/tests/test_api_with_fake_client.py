@@ -506,6 +506,15 @@ def test_hover_start_goes_over_the_radio_with_mission_code_not_over_rosbridge():
     assert fake.published_mission_selects == []
 
 
+def test_motor_test_start_goes_over_the_radio_with_its_own_code():
+    client, fake, radio = make_radio_client()
+    resp = client.post("/api/mission/start", json={"mission": "motor_test"})
+    assert resp.status_code == 200
+    assert resp.json()["mission"] == "motor_test"
+    assert radio.sent == [("start", 2)]
+    assert fake.published_commands == []
+
+
 def test_abort_goes_over_the_radio_not_over_rosbridge():
     client, fake, radio = make_radio_client()
     resp = client.post("/api/command/abort")
@@ -637,11 +646,11 @@ def test_no_route_exists_beyond_the_documented_command_surface():
         assert client.put(path).status_code == 404
 
 
-def test_list_missions_returns_exactly_hover():
+def test_list_missions_returns_hover_and_motor_test():
     client, _ = make_client()
     body = client.get("/api/missions").json()
-    assert [m["id"] for m in body] == ["hover"]
-    assert body[0]["name"] == "Hover"
+    assert [m["id"] for m in body] == ["hover", "motor_test"]
+    assert [m["name"] for m in body] == ["Hover", "Motor Test"]
 
 
 def test_get_mission_detail_for_hover():

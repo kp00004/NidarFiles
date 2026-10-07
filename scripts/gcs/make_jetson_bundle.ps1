@@ -9,7 +9,7 @@ Usage:
 
 On the Jetson (USB sticks mount under /media/<user>/<label>):
     rm -rf ~/NidarFiles && cp -r /media/$USER/<label>/NidarFiles ~/
-    chmod +x ~/NidarFiles/scripts/jetson/*.sh ~/NidarFiles/missions/hover/mission.py
+    chmod +x ~/NidarFiles/scripts/jetson/*.sh ~/NidarFiles/missions/*/mission.py
     ~/NidarFiles/scripts/jetson/setup_jetson.sh     # rebuilds ~/nidar_ws
 
 Leaves out .git, caches and logs. Shell and Python files are written with

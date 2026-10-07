@@ -48,6 +48,7 @@ from .radio_telemetry import DEFAULT_RATE_HZ, TelemetryRelay
 from .telem_command_codec import (
     JETSON_COMPONENT_ID,
     JETSON_SYSTEM_ID,
+    MISSION_CODES,
     MISSION_STATE_CODES,
     MISSION_STATE_UNKNOWN,
     MSG_ID_COMMAND_LONG,
@@ -68,6 +69,7 @@ from .topics import (
     LOCAL_POSITION_TOPIC,
     LOCAL_VELOCITY_TOPIC,
     MISSION_SELECT_TOPIC,
+    MOTOR_TEST_STATUS_TOPIC,
     RADIO_STATUS_TOPIC,
 )
 
@@ -79,6 +81,12 @@ DEFAULT_SERIAL_PORT = (
 )
 DEFAULT_FALLBACK_PORT = "/dev/ttyUSB0"
 DEFAULT_BAUD = 115200
+
+# Each mission node's status topic: its liveness signal and its state.
+MISSION_STATUS_TOPICS = {
+    "hover": HOVER_STATUS_TOPIC,
+    "motor_test": MOTOR_TEST_STATUS_TOPIC,
+}
 
 _FCU_STATE_STALE_S = 3.0
 _MISSION_STATUS_STALE_S = 3.0
@@ -112,8 +120,11 @@ class RadioCommandNode(Node):
 
         self._fcu_connected = False
         self._fcu_state_at: Optional[float] = None
-        self._mission_state: Optional[str] = None
-        self._mission_status_at: Optional[float] = None
+        # mission id -> (state, monotonic time of its last status)
+        self._missions: dict = {}
+        # The mission the GCS sees in the heartbeat / telemetry: the one
+        # last STARTed (hover until then).
+        self._active_mission = "hover"
         self._last_rx_at: Optional[float] = None
         self._last_command: Optional[dict] = None
         self._telemetry = TelemetryRelay(self._next_seq, time.monotonic())
@@ -124,7 +135,10 @@ class RadioCommandNode(Node):
 
         best_effort = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, depth=10)
         self.create_subscription(State, FCU_STATE_TOPIC, self._on_fcu_state, best_effort)
-        self.create_subscription(String, HOVER_STATUS_TOPIC, self._on_mission_status, 10)
+        for mission_id, topic in MISSION_STATUS_TOPICS.items():
+            self.create_subscription(
+                String, topic, lambda msg, m=mission_id: self._on_mission_status(m, msg), 10
+            )
         self.create_subscription(BatteryState, BATTERY_TOPIC, self._on_battery, best_effort)
         self.create_subscription(PoseStamped, LOCAL_POSITION_TOPIC, self._on_pose, best_effort)
         self.create_subscription(TwistStamped, LOCAL_VELOCITY_TOPIC, self._on_velocity, best_effort)
@@ -154,15 +168,16 @@ class RadioCommandNode(Node):
             self._fcu_state_at, msg.connected, msg.armed, msg.guided, msg.mode, msg.system_status
         )
 
-    def _on_mission_status(self, msg: String) -> None:
+    def _on_mission_status(self, mission_id: str, msg: String) -> None:
         try:
             status = json.loads(msg.data)
         except (json.JSONDecodeError, TypeError):
             return
         if isinstance(status, dict) and status.get("execution_mode") == "real":
-            self._mission_state = status.get("state")
-            self._mission_status_at = time.monotonic()
-            self._telemetry.update_mission_status(self._mission_status_at, status)
+            now = time.monotonic()
+            self._missions[mission_id] = (status.get("state"), now)
+            if mission_id == self._active_mission:
+                self._telemetry.update_mission_status(now, status)
 
     def _on_battery(self, msg: BatteryState) -> None:
         self._telemetry.update_battery(time.monotonic(), msg.voltage, msg.current, msg.percentage)
@@ -185,15 +200,12 @@ class RadioCommandNode(Node):
     def _readiness(self) -> Readiness:
         now = time.monotonic()
         fcu_fresh = self._fcu_state_at is not None and now - self._fcu_state_at < _FCU_STATE_STALE_S
-        mission_fresh = (
-            self._mission_status_at is not None
-            and now - self._mission_status_at < _MISSION_STATUS_STALE_S
-        )
-        return Readiness(
-            fcu_connected=fcu_fresh and self._fcu_connected,
-            mission_alive=mission_fresh,
-            mission_state=self._mission_state if mission_fresh else None,
-        )
+        missions = {
+            mission_id: state
+            for mission_id, (state, at) in self._missions.items()
+            if now - at < _MISSION_STATUS_STALE_S
+        }
+        return Readiness(fcu_connected=fcu_fresh and self._fcu_connected, missions=missions)
 
     # -- serial -----------------------------------------------------------------
 
@@ -309,6 +321,7 @@ class RadioCommandNode(Node):
             self.get_logger().warning(f"[{_now()}] DRY RUN: not publishing {decision.forward!r}")
             return
         if decision.forward == "start":
+            self._active_mission = decision.mission_id
             selection = {"mission_id": decision.mission_id, "source": "radio", "nonce": nonce}
             self._select_pub.publish(String(data=json.dumps(selection)))
         self._command_pub.publish(String(data=decision.forward))
@@ -317,16 +330,19 @@ class RadioCommandNode(Node):
 
     def _send_heartbeat_and_status(self) -> None:
         readiness = self._readiness()
-        code = MISSION_STATE_CODES.get(readiness.mission_state or "", MISSION_STATE_UNKNOWN)
-        self._write(encode_heartbeat(code, self._next_seq()))
+        state = readiness.missions.get(self._active_mission)
+        code = MISSION_STATE_CODES.get(state or "", MISSION_STATE_UNKNOWN)
+        self._write(
+            encode_heartbeat(code, self._next_seq(), MISSION_CODES.get(self._active_mission, 0))
+        )
         now = time.monotonic()
         status = {
             "serial_open": self._serial is not None,
             "serial_port": self._open_port,
             "last_rx_age_s": None if self._last_rx_at is None else round(now - self._last_rx_at, 1),
             "fcu_connected": readiness.fcu_connected,
-            "mission_alive": readiness.mission_alive,
-            "mission_state": readiness.mission_state,
+            "missions": dict(readiness.missions),
+            "active_mission": self._active_mission,
             "last_command": self._last_command,
             "dry_run": self._dry_run,
         }

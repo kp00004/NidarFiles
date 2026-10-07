@@ -280,9 +280,9 @@ Wire format (private two-node MAVLink2 network; GCS 255/190, Jetson 1/191):
 
 | Message | Direction | Fields |
 |---|---|---|
-| `COMMAND_LONG` (`MAV_CMD_USER_1` = 31010) | GCS → Jetson | `param1` 1 = START / 2 = ABORT, `param2` nonce (< 2^24, reused on resend), `param3` magic 4242, `param4` mission code (Hover = 1), `param7` protocol version 2 |
+| `COMMAND_LONG` (`MAV_CMD_USER_1` = 31010) | GCS → Jetson | `param1` 1 = START / 2 = ABORT, `param2` nonce (< 2^24, reused on resend), `param3` magic 4242, `param4` mission code (Hover = 1, Motor Test = 2), `param7` protocol version 2 |
 | `COMMAND_ACK` | Jetson → GCS | `result` MAV_RESULT, `progress` reason code (0 OK, 1 UNKNOWN_MISSION, 2 BAD_PROTOCOL_VERSION, 3 MISSION_NOT_READY, 4 FCU_NOT_CONNECTED, 5 MISSION_BUSY), `result_param2` = request nonce |
-| `HEARTBEAT` (1 Hz) | both | Jetson's `custom_mode` = mission state code |
+| `HEARTBEAT` (1 Hz) | both | Jetson's `custom_mode` = (active mission code << 8) \| mission state code (0 = mission unknown) |
 
 Rules: each nonce is acted on once (resends are re-ACKed with the original
 answer); ABORT is always accepted; an unknown mission is rejected, never

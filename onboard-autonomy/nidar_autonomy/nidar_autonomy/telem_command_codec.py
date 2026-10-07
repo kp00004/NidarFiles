@@ -16,7 +16,7 @@ Request: COMMAND_LONG(MAV_CMD_USER_1) addressed to the Jetson:
     param2  nonce -- the GCS resends the same nonce until it gets an ACK;
             the Jetson acts on each nonce once and re-ACKs resends
     param3  NIDAR_MAGIC -- rejects stray MAV_CMD_USER_1 traffic
-    param4  mission code (START only): MISSION_HOVER = 1
+    param4  mission code (START only): MISSION_HOVER = 1, MISSION_MOTOR_TEST = 2
     param7  PROTOCOL_VERSION (2)
 
 Reply: COMMAND_ACK(MAV_CMD_USER_1). `result` is MAV_RESULT_ACCEPTED or a
@@ -24,8 +24,9 @@ rejection, `progress` carries a REASON_* code saying why, and
 `result_param2` echoes the request's nonce so the GCS can match each ACK
 to its command (an ABORT may be sent while a START is still waiting).
 
-The Jetson also sends a HEARTBEAT at 1 Hz whose custom_mode is the
-mission state code (MISSION_STATE_CODES), so the GCS can show radio link
+The Jetson also sends a HEARTBEAT at 1 Hz whose custom_mode carries the
+active mission and its state -- (mission code << 8) | MISSION_STATE_CODES
+value (mission code 0 = none known) -- so the GCS can show radio link
 health and mission state.
 
 Telemetry (there is no Wi-Fi link; the radio is the only Jetson <-> GCS
@@ -112,7 +113,9 @@ NIDAR_MAGIC = 4242.0
 PROTOCOL_VERSION = 2
 
 MISSION_HOVER = 1
-MISSION_NAMES = {MISSION_HOVER: "hover"}
+MISSION_MOTOR_TEST = 2
+MISSION_NAMES = {MISSION_HOVER: "hover", MISSION_MOTOR_TEST: "motor_test"}
+MISSION_CODES = {name: code for code, name in MISSION_NAMES.items()}
 
 REASON_OK = 0
 REASON_UNKNOWN_MISSION = 1
@@ -129,8 +132,9 @@ REASON_NAMES = {
     REASON_MISSION_BUSY: "MISSION_BUSY",
 }
 
-# Heartbeat custom_mode values -- the hover mission's states
-# (missions/hover/hover_logic.py). 255 = unknown / no mission status.
+# Heartbeat mission state values (low byte of custom_mode) -- the states of
+# missions/hover/hover_logic.py and missions/motor_test/motor_test_logic.py.
+# 255 = unknown / no mission status.
 MISSION_STATE_CODES = {
     "idle": 0,
     "preflight": 1,
@@ -143,6 +147,7 @@ MISSION_STATE_CODES = {
     "aborted": 8,
     "failed": 9,
     "pilot_override": 10,
+    "testing": 11,
 }
 MISSION_STATE_UNKNOWN = 255
 
@@ -379,12 +384,13 @@ def encode_command_ack(
 def encode_heartbeat(
     mission_state_code: int,
     seq: int,
+    mission_code: int = 0,
     sysid: int = JETSON_SYSTEM_ID,
     compid: int = JETSON_COMPONENT_ID,
 ) -> bytes:
     payload = struct.pack(
         _HEARTBEAT_FMT,
-        mission_state_code,
+        ((mission_code & 0xFF) << 8) | (mission_state_code & 0xFF),
         MAV_TYPE_ONBOARD_CONTROLLER,
         MAV_AUTOPILOT_INVALID,
         0,

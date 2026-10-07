@@ -34,5 +34,5 @@ foreach ($item in @("onboard-autonomy", "missions", "scripts", "README.md")) {
 }
 
 # Files edited on Windows may carry CRLF line endings; bash scripts must not.
-ssh $target "find $RemoteDir/scripts -name '*.sh' -exec sed -i 's/\r$//' {} + ; chmod +x $RemoteDir/scripts/jetson/*.sh $RemoteDir/missions/hover/mission.py"
+ssh $target "find $RemoteDir/scripts -name '*.sh' -exec sed -i 's/\r$//' {} + ; chmod +x $RemoteDir/scripts/jetson/*.sh $RemoteDir/missions/*/mission.py"
 Write-Host "Done. On the Jetson: $RemoteDir/scripts/jetson/setup_jetson.sh"

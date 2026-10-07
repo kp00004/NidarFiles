@@ -46,8 +46,8 @@ class FakeJetson:
                 )
         return out
 
-    def heartbeat(self, state_code: int) -> bytes:
-        return self.mav.heartbeat_encode(18, 8, 0, state_code, 4).pack(self.mav)
+    def heartbeat(self, state_code: int, mission_code: int = 0) -> bytes:
+        return self.mav.heartbeat_encode(18, 8, 0, (mission_code << 8) | state_code, 4).pack(self.mav)
 
 
 class FakeSerial:
@@ -194,3 +194,18 @@ def test_missing_port_raises_unavailable_never_pretends_to_send():
         link.stop()
     assert status["port_open"] is False
     assert "COM5" in status["port_error"]
+
+
+
+def test_heartbeat_carries_the_active_mission():
+    jetson = FakeJetson()
+    link, serial = _link(jetson)
+    try:
+        serial.inbox.put(jetson.heartbeat(11, mission_code=2))
+        deadline = time.monotonic() + 2
+        while not link.status()["jetson_link_up"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        status = link.status()
+    finally:
+        link.stop()
+    assert (status["jetson_mission"], status["jetson_mission_state"]) == ("motor_test", "testing")

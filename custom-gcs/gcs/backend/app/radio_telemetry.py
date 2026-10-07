@@ -40,6 +40,7 @@ from .radio_protocol import (
     JETSON_SYSTEM_ID,
     MAV_MODE_FLAG_GUIDED_ENABLED,
     MAV_MODE_FLAG_SAFETY_ARMED,
+    MISSION_NAMES_BY_CODE,
     MISSION_STATE_NAMES,
     STATUSTEXT_CHUNK_LEN,
 )
@@ -86,6 +87,7 @@ class RadioTelemetryClient:
         self._hover: dict[str, tuple[float, float]] = {}  # field -> (value, received at)
         self._statustext_history: list[dict] = []
         self._partial_texts: dict[tuple, dict] = {}
+        self._mission_id: Optional[str] = None  # from the Jetson heartbeat
 
     # -- input (RadioLink reader thread) -------------------------------------------
 
@@ -96,7 +98,8 @@ class RadioTelemetryClient:
         with self._lock:
             if source == _JETSON:
                 if kind == "HEARTBEAT":
-                    self._store("jetson", MISSION_STATE_NAMES.get(msg.custom_mode, "unknown"), now)
+                    self._store("jetson", MISSION_STATE_NAMES.get(msg.custom_mode & 0xFF, "unknown"), now)
+                    self._mission_id = MISSION_NAMES_BY_CODE.get((msg.custom_mode >> 8) & 0xFF)
                 elif kind == "NAMED_VALUE_FLOAT" and msg.name in HOVER_VALUE_KEYS:
                     self._hover[HOVER_VALUE_KEYS[msg.name]] = (round(msg.value, 2), now)
                 elif kind == "STATUSTEXT":
@@ -210,7 +213,7 @@ class RadioTelemetryClient:
         fcu = self._fresh("fcu", FCU_STALE_S) or {}
         position = self._fresh("position", POSE_STALE_S)
         return {
-            "scenario": "hover",
+            "scenario": self._mission_id or "hover",
             "state": state,
             "detail": self._fresh("mission_detail", MISSION_DETAIL_STALE_S),
             "target_altitude_m": values.get("target_altitude_m"),

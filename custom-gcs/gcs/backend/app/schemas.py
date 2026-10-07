@@ -365,6 +365,8 @@ class RadioStatusResponse(BaseModel):
     jetson_heartbeat_age_s: float | None = None
     # Mission state carried in the Jetson's radio heartbeat (works without Wi-Fi).
     jetson_mission_state: str | None = None
+    # Which mission that state belongs to ("hover", "motor_test"; None = unknown).
+    jetson_mission: str | None = None
     last_command: RadioLastCommand | None = None
 
 

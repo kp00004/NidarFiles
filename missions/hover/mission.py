@@ -120,6 +120,8 @@ class HoverMissionNode(Node):
                 return
             if msg.data != "start":
                 return
+            if self._selected_other_mission(now):
+                return  # e.g. a motor test START: not ours, not a failure
             problem = self._start_problem(now)
             if problem:
                 self.get_logger().error(f"[{_now()}] START refused: {problem}")
@@ -128,6 +130,12 @@ class HoverMissionNode(Node):
                 return
             self.get_logger().warning(f"[{_now()}] START received for {MISSION_ID}")
             self._run(self._mission.start(now, snap))
+
+    def _selected_other_mission(self, now: float) -> bool:
+        if self._selection is None:
+            return False
+        mission_id, at = self._selection
+        return mission_id != MISSION_ID and now - at <= _SELECTION_MAX_AGE_S
 
     def _start_problem(self, now: float):
         if self._selection is None:

@@ -79,7 +79,7 @@ colcon build --symlink-install \
   --base-paths "$NIDAR_DIR/onboard-autonomy" \
   --packages-select nidar_airmouse nidar_autonomy
 
-chmod +x "$NIDAR_DIR"/scripts/jetson/*.sh "$NIDAR_DIR/missions/hover/mission.py"
+chmod +x "$NIDAR_DIR"/scripts/jetson/*.sh "$NIDAR_DIR"/missions/*/mission.py
 
 echo
 echo "Done. Next: $NIDAR_DIR/scripts/jetson/check_jetson.sh (read-only checks),"

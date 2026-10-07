@@ -1,6 +1,7 @@
 """ArduCopter (4.6.x) vehicle control through MAVROS -- the minimal set of
 operations a GUIDED-mode mission needs: mode changes, arm/disarm, takeoff,
-and a fresh view of state/position/battery.
+and a fresh view of state/position/battery -- plus ArduCopter's motor test
+(MAV_CMD_DO_MOTOR_TEST, props-off bench check; missions/motor_test).
 
 ArduCopter, NOT PX4: there is no OFFBOARD mode and no setpoint stream is
 needed to stay in GUIDED. After a GUIDED takeoff ArduCopter holds its
@@ -35,7 +36,7 @@ from typing import Callable, Optional
 
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import State
-from mavros_msgs.srv import CommandTOL, MessageInterval, SetMode
+from mavros_msgs.srv import CommandLong, CommandTOL, MessageInterval, SetMode
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import BatteryState
@@ -50,6 +51,15 @@ LAND = "LAND"
 SET_MODE_SERVICE = "/mavros/set_mode"
 TAKEOFF_SERVICE = "/mavros/cmd/takeoff"
 MESSAGE_INTERVAL_SERVICE = "/mavros/set_message_interval"
+COMMAND_SERVICE = "/mavros/cmd/command"
+
+MAV_CMD_DO_MOTOR_TEST = 209
+MOTOR_TEST_THROTTLE_PERCENT = 0
+# Motor numbering by ArduPilot's test sequence: 1 = A (front-right on a
+# quad X), then clockwise B, C, D -- the letters in ArduPilot's frame
+# diagrams and Mission Planner's motor test page.
+MOTOR_TEST_ORDER_SEQUENCE = 1
+MAV_RESULT_ACCEPTED = 0
 STATE_TOPIC = "/mavros/state"
 LOCAL_POSITION_TOPIC = "/mavros/local_position/pose"
 BATTERY_TOPIC = "/mavros/battery"
@@ -91,6 +101,7 @@ class ArduCopterVehicle:
         self._set_mode_client = node.create_client(SetMode, SET_MODE_SERVICE)
         self._takeoff_client = node.create_client(CommandTOL, TAKEOFF_SERVICE)
         self._interval_client = node.create_client(MessageInterval, MESSAGE_INTERVAL_SERVICE)
+        self._command_client = node.create_client(CommandLong, COMMAND_SERVICE)
 
     # -- state ----------------------------------------------------------------
 
@@ -152,6 +163,43 @@ class ArduCopterVehicle:
         future.add_done_callback(
             lambda f: self._finish(
                 f, done, lambda r: (r.success, f"success={r.success} result={r.result}")
+            )
+        )
+
+    def motor_test(self, motor: int, throttle_pct: float, timeout_s: float, done: Done) -> None:
+        """Spin one motor (1-based, test-sequence order) at `throttle_pct`
+        for `timeout_s` seconds via ArduCopter's motor test. The FCU stops
+        the motor by itself when the timeout ends, so a lost Jetson cannot
+        leave it spinning. throttle 0 with timeout 0 stops a running test
+        at once. ArduCopter refuses while armed, with the safety switch not
+        pressed, or with RC not calibrated -- the reason is in its
+        STATUSTEXT."""
+        if not self._command_client.service_is_ready():
+            done(False, f"{COMMAND_SERVICE} not available")
+            return
+        request = CommandLong.Request()
+        request.broadcast = False
+        request.command = MAV_CMD_DO_MOTOR_TEST
+        request.confirmation = 0
+        request.param1 = float(motor)
+        request.param2 = float(MOTOR_TEST_THROTTLE_PERCENT)
+        request.param3 = float(throttle_pct)
+        request.param4 = float(timeout_s)
+        request.param5 = 0.0  # motor count 0 = this motor only
+        request.param6 = float(MOTOR_TEST_ORDER_SEQUENCE)
+        request.param7 = 0.0
+        self._log.warning(
+            f"[ardupilot_vehicle] MOTOR TEST motor {motor} at {throttle_pct:.0f}% for {timeout_s:.1f} s"
+        )
+        future = self._command_client.call_async(request)
+        future.add_done_callback(
+            lambda f: self._finish(
+                f,
+                done,
+                lambda r: (
+                    r.success and r.result == MAV_RESULT_ACCEPTED,
+                    f"success={r.success} result={r.result}",
+                ),
             )
         )
 

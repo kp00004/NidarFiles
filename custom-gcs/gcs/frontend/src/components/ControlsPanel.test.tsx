@@ -5,6 +5,7 @@ import * as api from "../api";
 import type { RadioCommandResponse, RadioStatusResponse } from "../types";
 
 const HOVER = { id: "hover", name: "Hover", description: "real hover" };
+const MOTOR_TEST = { id: "motor_test", name: "Motor Test", description: "props off" };
 
 const RADIO_UP: RadioStatusResponse = {
   enabled: true,
@@ -23,7 +24,7 @@ function accepted(command: "start" | "abort"): RadioCommandResponse {
 }
 
 beforeEach(() => {
-  vi.spyOn(api, "getMissions").mockResolvedValue([HOVER]);
+  vi.spyOn(api, "getMissions").mockResolvedValue([HOVER, MOTOR_TEST]);
   vi.spyOn(api, "getRadioStatus").mockResolvedValue(RADIO_UP);
   vi.spyOn(api, "getFlightTestStatus").mockResolvedValue({
     scenario: "hover", state: "idle", target_altitude_m: 0.5, current_altitude_m: null,
@@ -42,11 +43,29 @@ async function renderReady() {
 }
 
 describe("ControlsPanel (Mission Control)", () => {
-  it("shows a Mission dropdown containing exactly Hover, selected by default", async () => {
+  it("shows a Mission dropdown with Hover and Motor Test, Hover selected by default", async () => {
     await renderReady();
     const select = screen.getByRole("combobox", { name: "Mission" }) as HTMLSelectElement;
-    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Hover"]);
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Hover", "Motor Test"]);
     expect(select.value).toBe("hover");
+    expect(screen.getByText(/REAL FLIGHT\. START \(Hover\)/)).toBeInTheDocument();
+  });
+
+  it("selecting Motor Test sends its id on START and shows the props-off warning", async () => {
+    const spy = vi.spyOn(api, "postMissionStart").mockResolvedValue({ ...accepted("start"), mission: "motor_test" });
+    await renderReady();
+    fireEvent.change(screen.getByRole("combobox", { name: "Mission" }), { target: { value: "motor_test" } });
+    expect(screen.getByText(/PROPS OFF\. START \(Motor Test\)/)).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "START" }));
+    });
+    expect(spy).toHaveBeenCalledWith("motor_test");
+  });
+
+  it("names the active mission next to its radio state", async () => {
+    vi.spyOn(api, "getRadioStatus").mockResolvedValue({ ...RADIO_UP, jetson_mission: "motor_test", jetson_mission_state: "testing" });
+    await renderReady();
+    expect(await screen.findByText("motor_test · testing")).toBeInTheDocument();
   });
 
   it("START sends the selected mission id", async () => {

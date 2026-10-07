@@ -6,14 +6,16 @@ import pytest
 from app.missions import MISSION_REGISTRY, MissionNotFoundError, get_mission
 
 
-def test_exactly_one_mission_hover():
-    assert [m.id for m in MISSION_REGISTRY] == ["hover"]
+def test_missions_are_hover_and_motor_test():
+    assert [m.id for m in MISSION_REGISTRY] == ["hover", "motor_test"]
     assert get_mission("hover").name == "Hover"
+    assert get_mission("motor_test").name == "Motor Test"
 
 
-def test_hover_radio_code_matches_the_jetson_table():
-    # onboard-autonomy telem_command_codec.MISSION_HOVER == 1
+def test_radio_codes_match_the_jetson_table():
+    # onboard-autonomy telem_command_codec: MISSION_HOVER == 1, MISSION_MOTOR_TEST == 2
     assert get_mission("hover").radio_code == 1
+    assert get_mission("motor_test").radio_code == 2
 
 
 def test_radio_codes_are_unique_and_nonzero():

@@ -1,10 +1,10 @@
 # NidarFiles — NIDAR AirMouse: radio START → real hover
 
-> **Status (2026-10-07): software complete, NOT hardware tested. Radio-only: no Wi-Fi link.** Nothing in
-> this workspace has run on the Jetson, the radios, or the Pixhawk yet. The
-> unit and software-integration tests below prove the code's decisions, not
-> the flight. Section B lists what must be configured and verified on the
-> real hardware before the first flight.
+> **Status (2026-10-07): radio-only (no Wi-Fi link). Radio START/ABORT and
+> telemetry PASSED on the real hardware in dry-run. NOT yet tested: Motor
+> Test on the motors, and any flight.** The hover cannot fly until the
+> Pixhawk has an indoor position estimate (section B item 1). Section B
+> lists what must be configured and verified before the first flight.
 
 ## What this is
 
@@ -22,8 +22,8 @@ GCS and the drone takes off, hovers, and lands.**
   validates it, runs the hover mission, and commands the Pixhawk via MAVROS.
 - **Pixhawk 6X (ArduCopter 4.6.3)**: flies the drone (GUIDED takeoff, position
   hold, LAND), using its EKF3 indoor position estimate.
-- **Mission dropdown**: lists the missions the GCS can start. For now exactly
-  one: **Hover**.
+- **Mission dropdown**: lists the missions the GCS can start: **Hover** and
+  **Motor Test** (props-off bench check, see "Motor Test" below).
 
 ## Architecture
 
@@ -80,10 +80,14 @@ NidarFiles/
 ├── custom-gcs/            GCS: FastAPI backend + React frontend (git, branch feature/hover-radio)
 ├── onboard-autonomy/      Jetson ROS 2 packages (git, branch feature/hover-radio)
 ├── missions/
-│   └── hover/
-│       ├── mission.py         the hover mission (ROS 2 node, runs on the Jetson)
-│       ├── hover_logic.py     its decision logic (pure Python, unit-tested)
-│       └── test_hover_logic.py
+│   ├── hover/
+│   │   ├── mission.py         the hover mission (ROS 2 node, runs on the Jetson)
+│   │   ├── hover_logic.py     its decision logic (pure Python, unit-tested)
+│   │   └── test_hover_logic.py
+│   └── motor_test/
+│       ├── mission.py         motor test (ROS 2 node, Jetson) -- PROPS OFF
+│       ├── motor_test_logic.py
+│       └── test_motor_test_logic.py
 ├── scripts/
 │   ├── jetson/  setup_jetson.sh, check_jetson.sh, start_jetson.sh
 │   └── gcs/     start_gcs.ps1, make_jetson_bundle.ps1 (USB pen drive), deploy_to_jetson.ps1 (SSH, needs a network)
@@ -223,15 +227,40 @@ In the operator panel, **Mission Control** card:
 ### 6. Mission procedure
 
 1. Start the Jetson stack, then the GCS. Wait for the checks above.
-2. **Mission: Hover** (only entry).
+2. **Mission: Hover**.
 3. Press **START**.
 4. Panel shows `Jetson ACCEPTED START (hover)`, or `START not accepted: … REJECTED START: <reason>`.
 5. Mission state goes `setting_guided → arming → taking_off → hovering → landing → complete`, and the Vehicle row shows ARMED / GUIDED / altitude.
 6. **ABORT** at any time: on the ground it disarms; in the air it switches to LAND.
 
+### 7. Motor Test (PROPS OFF)
+
+Checks that every motor runs, in the right order and direction, without
+needing a position estimate. Uses ArduCopter's own motor test
+(`MAV_CMD_DO_MOTOR_TEST`, the same as Mission Planner's Motor Test page):
+it does **not** arm the vehicle the normal way and skips the EKF/position
+checks, but ArduCopter still refuses if the vehicle is armed, the safety
+switch isn't pressed, or the RC isn't calibrated (the reason shows in the
+FCU status text panel).
+
+1. **Remove the props.** Start the Jetson stack **live** (no `--dry-run`) and the GCS.
+2. **Mission: Motor Test**, press **START**.
+3. Motors spin one at a time: **A, B, C, D** (A = front-right on a quad X,
+   then clockwise -- ArduPilot's test order) at **8 %** for **5 s** each,
+   1 s apart. Mission status shows `testing` and which motor.
+   Compare each with ArduPilot's motor diagram for your frame: the right
+   motor position, and the right direction (CW/CCW).
+4. **ABORT** stops the running motor immediately. Every motor command also
+   carries its own 5 s timeout, so ArduCopter stops the motor by itself if
+   the Jetson or radio fails.
+
+Settings: `CONFIG` at the top of `missions/motor_test/mission.py`
+(`motor_count`, `throttle_pct`, `per_motor_s`). The Jetson refuses a START
+for either mission while the other one is running (`MISSION_BUSY`).
+
 ## Safety
 
-- **This is real hardware.** In live mode a radio START arms and flies the vehicle.
+- **This is real hardware.** In live mode a radio START (Hover) arms and flies the vehicle; START (Motor Test) spins the motors -- **props off**.
 - First tests: **props OFF** (dry-run, then live START to watch GUIDED/ARM/TAKEOFF requests on the bench). First flight: props on, **vehicle tethered/netted**, people clear, low altitude (default 0.5 m, 10 s hold).
 - A **safety pilot with an RC transmitter** (mode switch with LAND and a manual mode, plus motor kill) should be ready on every flight. It is the only abort independent of the GCS, radios and Jetson.
 - **ABORT** = LAND in the air, DISARM on the ground before takeoff.
@@ -266,16 +295,17 @@ In the operator panel, **Mission Control** card:
 
 | Level | Status |
 |---|---|
-| Hover decision logic (`missions/hover`, 33 tests) | PASSED — `python -m pytest missions/hover -q` |
-| onboard-autonomy unit tests (378 passed, 4 ROS-only skipped) | PASSED on Windows without ROS — ROS node tests run only on the Jetson |
-| GCS backend (167 passed, 1 skipped: needs Linux sim venv) | PASSED |
-| GCS frontend (96 tests) + typecheck + production build | PASSED |
+| Mission decision logic (`missions/`: hover 33, motor test 15) | PASSED — `python -m pytest missions -q` |
+| onboard-autonomy unit tests (385 passed, 4 ROS-only skipped) | PASSED on Windows without ROS — ROS node tests run only on the Jetson |
+| GCS backend (170 passed, 1 skipped: needs Linux sim venv) | PASSED |
+| GCS frontend (98 tests) + typecheck + production build | PASSED |
 | Radio protocol vs pymavlink (byte-for-byte) | PASSED |
 | GCS RadioLink ↔ Jetson codec + gate, in-memory serial | PASSED (software integration) |
 | Radio telemetry: Jetson relay + codec → GCS RadioLink → `/api/telemetry`, in-memory serial | PASSED (software integration) |
 | Backend live smoke test, no radio attached | PASSED: START/ABORT refused with 503, nothing claimed sent |
-| RF link Jetson ↔ laptop | **NOT TESTED** |
-| Jetson nodes on ROS 2 / MAVROS | **NOT TESTED** |
+| RF link Jetson ↔ laptop (dry-run, 2026-10-07) | **PASSED on hardware**: START/ABORT ACKed on the 1st attempt; telemetry (FCU state, battery, attitude) live over the radio; radio unplug/replug recovered by itself |
+| Jetson nodes on ROS 2 / MAVROS (radio node, hover node) | **PASSED on hardware** (start-up, MAVROS connected, stream rates confirmed) |
+| Motor Test via this code | **NOT TESTED** |
 | Pixhawk GUIDED / ARM / TAKEOFF / LAND via this code | **NOT TESTED** |
 | End-to-end START → hover | **NOT TESTED** |
 | Flight | **NOT TESTED** |

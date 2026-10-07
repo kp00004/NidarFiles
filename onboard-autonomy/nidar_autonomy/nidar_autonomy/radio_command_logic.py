@@ -6,7 +6,9 @@ Rules:
   - ABORT is always forwarded and ACCEPTED, whatever the vehicle or
     mission state (Hard Safety Rule 2: abort must preempt everything).
   - START is forwarded only if every check passes, otherwise it is
-    rejected with a REASON_* code the GCS displays. Nothing is armed or
+    rejected with a REASON_* code the GCS displays. The requested
+    mission's node must be alive, and NO mission may be mid-run (a motor
+    test must never start while a hover is flying, and vice versa). Nothing is armed or
     moved for a rejected START -- it never reaches /gcs/command.
   - A resend of an already-handled (sender, nonce) gets the ORIGINAL
     decision again and is never forwarded twice.
@@ -16,7 +18,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, replace
-from typing import Optional, Tuple
+from typing import Mapping, Optional, Tuple
 
 from .telem_command_codec import (
     MAV_RESULT_ACCEPTED,
@@ -44,8 +46,9 @@ _MEMORY = 64
 @dataclass(frozen=True)
 class Readiness:
     fcu_connected: bool  # fresh /mavros/state with connected=True
-    mission_alive: bool  # fresh status from the mission node
-    mission_state: Optional[str]
+    # mission id -> state, for every mission node whose status is fresh
+    # (a mission missing here is not running / not alive)
+    missions: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -85,10 +88,10 @@ class CommandGate:
         mission_id = MISSION_NAMES.get(cmd.mission_code)
         if mission_id is None:
             return Decision(None, None, MAV_RESULT_DENIED, REASON_UNKNOWN_MISSION)
-        if not readiness.mission_alive:
+        if mission_id not in readiness.missions:
             return Decision(None, mission_id, MAV_RESULT_TEMPORARILY_REJECTED, REASON_MISSION_NOT_READY)
         if not readiness.fcu_connected:
             return Decision(None, mission_id, MAV_RESULT_TEMPORARILY_REJECTED, REASON_FCU_NOT_CONNECTED)
-        if readiness.mission_state not in STARTABLE_MISSION_STATES:
+        if any(state not in STARTABLE_MISSION_STATES for state in readiness.missions.values()):
             return Decision(None, mission_id, MAV_RESULT_TEMPORARILY_REJECTED, REASON_MISSION_BUSY)
         return Decision("start", mission_id, MAV_RESULT_ACCEPTED, REASON_OK)

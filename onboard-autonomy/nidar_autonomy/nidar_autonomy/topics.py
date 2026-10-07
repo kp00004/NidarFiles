@@ -105,6 +105,10 @@ MISSION_SELECT_TOPIC = "/gcs/mission_select"
 # radio_command_node also uses it as the mission's liveness signal.
 HOVER_STATUS_TOPIC = "/flight_test/status"
 
+# The motor test mission's status (JSON std_msgs/String, ~2 Hz), same shape
+# as HOVER_STATUS_TOPIC with scenario "motor_test". Also its liveness signal.
+MOTOR_TEST_STATUS_TOPIC = "/motor_test/status"
+
 # radio_command_node's own status (JSON std_msgs/String, 1 Hz): serial
 # port, last packet, last command and its ACK -- for local debugging on the
 # Jetson (`ros2 topic echo`); the GCS gets the same facts over the radio.

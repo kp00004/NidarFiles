@@ -45,8 +45,8 @@ def _feed(client: RadioTelemetryClient, *messages) -> None:
         client.on_message(_decode(msg.pack(sender)))
 
 
-def jetson_heartbeat(state_code: int = 0):
-    return JETSON, JETSON.heartbeat_encode(18, 8, 0, state_code, 4)
+def jetson_heartbeat(state_code: int = 0, mission_code: int = 0):
+    return JETSON, JETSON.heartbeat_encode(18, 8, 0, (mission_code << 8) | state_code, 4)
 
 
 def fcu_heartbeat(armed=False, guided=False, mode=0, system_status=3):
@@ -351,3 +351,17 @@ def test_api_serves_radio_telemetry():
     assert body["statustext"][-1]["text"] == "EKF3 IMU0 is using optical flow"
     assert body["heartbeat_age_s"] is not None
     assert flight["state"] == "hovering" and flight["target_altitude_m"] == 0.5
+
+
+
+def test_motor_test_status_from_radio():
+    client = RadioTelemetryClient(Clock())
+    _feed(
+        client,
+        jetson_heartbeat(11, mission_code=2),
+        statustext(JETSON, "motor B (2/4) at 8% for 5 s", severity=6),
+        named("hv_dur", 5.0),
+    )
+    status = client.latest("/flight_test/status")
+    assert (status["scenario"], status["state"]) == ("motor_test", "testing")
+    assert status["detail"] == "motor B (2/4) at 8% for 5 s"

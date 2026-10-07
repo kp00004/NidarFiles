@@ -269,6 +269,8 @@ export interface RadioStatusResponse {
   jetson_link_up: boolean;
   jetson_heartbeat_age_s: number | null;
   jetson_mission_state: string | null;
+  // Which mission that state belongs to ("hover", "motor_test"); null = unknown.
+  jetson_mission?: string | null;
   last_command: RadioLastCommand | null;
 }
 

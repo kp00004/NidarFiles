@@ -153,3 +153,9 @@ class TestAgainstPymavlink:
 
 def test_command_long_layout_is_33_bytes_before_truncation():
     assert struct.calcsize("<7fHBBB") == 33
+
+
+def test_heartbeat_carries_mission_code_in_the_high_byte():
+    mav = pytest.importorskip("pymavlink.dialects.v20.common")
+    parsed = mav.MAVLink(None).parse_char(encode_heartbeat(11, 3, mission_code=2))
+    assert (parsed.custom_mode >> 8, parsed.custom_mode & 0xFF) == (2, 11)

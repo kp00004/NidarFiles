@@ -6,6 +6,7 @@
 #   radio_command_node               (MicroLR900 radio, USB serial: START/ABORT
 #                                     in, telemetry out -- the GCS's only link)
 #   missions/hover/mission.py        (the hover mission -- REAL FLIGHT)
+#   missions/motor_test/mission.py   (motor test -- spins motors, PROPS OFF)
 #
 # There is no Wi-Fi link to the GCS and no rosbridge: everything the GCS
 # shows comes over the radio.
@@ -111,15 +112,17 @@ run radio_command_node ros2 run nidar_autonomy radio_command_node --ros-args \
   -p "serial_port:=$RADIO_PORT" -p "fallback_serial_port:=$RADIO_FALLBACK_PORT" \
   -p "baud:=$RADIO_BAUD" -p "dry_run:=$DRY_RUN" -p "telemetry_rate_hz:=$TELEMETRY_RATE_HZ"
 run hover_mission python3 "$NIDAR_DIR/missions/hover/mission.py"
+run motor_test_mission python3 "$NIDAR_DIR/missions/motor_test/mission.py"
 
 say "-------------------------------------------------------------------"
 if $DRY_RUN; then
   say "DRY RUN: radio commands are ACKed and logged, nothing is published, nothing can arm."
 else
-  say "LIVE: a radio START (Hover) from the GCS WILL arm and fly the vehicle."
+  say "LIVE: a radio START (Hover) from the GCS WILL arm and fly the vehicle;"
+  say "      a radio START (Motor Test) WILL spin the motors -- PROPS OFF."
 fi
-say "Ctrl+C stops everything. Following radio + hover logs:"
+say "Ctrl+C stops everything. Following radio + mission logs:"
 say "-------------------------------------------------------------------"
-tail -n +1 -F "$LOG_DIR/radio_command_node.log" "$LOG_DIR/hover_mission.log" &
+tail -n +1 -F "$LOG_DIR/radio_command_node.log" "$LOG_DIR/hover_mission.log" "$LOG_DIR/motor_test_mission.log" &
 PIDS+=($!)
 wait
