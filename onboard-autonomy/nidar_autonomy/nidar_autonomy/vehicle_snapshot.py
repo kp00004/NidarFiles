@@ -21,3 +21,7 @@ class VehicleSnapshot:
     position_age_s: Optional[float]
     battery_voltage_v: Optional[float]
     battery_age_s: Optional[float]
+    # Seconds since the FCU last reported its EKF origin (GPS_GLOBAL_ORIGIN);
+    # None = never on this run. Without an origin ArduCopter refuses a
+    # GUIDED takeoff (no GPS indoors: the Jetson sets it, ardupilot_vehicle).
+    ekf_origin_age_s: Optional[float] = None

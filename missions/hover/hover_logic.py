@@ -68,6 +68,7 @@ class HoverConfig:
     land_timeout_s: float = 60.0
     min_battery_voltage_v: Optional[float] = None
     battery_stale_s: float = 5.0
+    origin_stale_s: float = 10.0  # EKF origin must have been reported this recently
 
 
 @dataclass(frozen=True)
@@ -274,6 +275,11 @@ class HoverMission:
             problems.append("FCU not connected (/mavros/state stale or connected=false)")
         if snap.armed is not False:
             problems.append("vehicle already armed or armed state unknown")
+        if snap.ekf_origin_age_s is None or snap.ekf_origin_age_s > c.origin_stale_s:
+            problems.append(
+                "EKF origin not set (the Jetson sets it at startup -- see hover_mission.log; "
+                "ArduCopter refuses a GUIDED takeoff without it)"
+            )
         if snap.position is None or snap.position_age_s is None or snap.position_age_s > c.position_stale_s:
             problems.append(
                 "no fresh local position -- the EKF has no indoor position estimate "
@@ -318,6 +324,11 @@ class HoverMission:
             self.state = PILOT_OVERRIDE
             self.detail = f"flight mode changed to {snap.mode} -- mission stopped commanding (pilot has control)"
             return []
+        if snap.ekf_origin_age_s is None or snap.ekf_origin_age_s > c.origin_stale_s:
+            problems.append(
+                "EKF origin not set (the Jetson sets it at startup -- see hover_mission.log; "
+                "ArduCopter refuses a GUIDED takeoff without it)"
+            )
         if snap.position is None or snap.position_age_s is None or snap.position_age_s > c.position_stale_s:
             return self._land(now, "local position stale -- landing", FAILED)
         altitude = self._altitude(snap)

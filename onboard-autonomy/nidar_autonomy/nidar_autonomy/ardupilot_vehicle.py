@@ -19,6 +19,15 @@ Every operation is non-blocking (safe to call from a timer callback) and reports
 callback; callers must confirm the effect from snapshot() (e.g. that the
 mode really changed), not from the service reply alone.
 
+EKF origin: indoors there is no GPS, so the EKF never gets an origin by
+itself, and without one ArduCopter refuses a GUIDED takeoff (it cannot
+turn the takeoff into a target position) even though a local position is
+published. ensure_ekf_origin() sets a fixed origin through MAVROS
+(SET_GPS_GLOBAL_ORIGIN) once per FCU connection, then keeps asking the
+FCU to report it (GPS_GLOBAL_ORIGIN) so snapshot().ekf_origin_age_s shows
+it is really set. Seen on the bench 2026-10-08: no origin -> TAKEOFF
+refused after ARM.
+
 HARDWARE VERIFICATION REQUIRED (not testable without the vehicle):
   - service names /mavros/set_mode, /mavros/cmd/takeoff,
     /mavros/set_message_interval exist on the Jetson's MAVROS build;
@@ -34,6 +43,7 @@ import threading
 import time
 from typing import Callable, Optional
 
+from geographic_msgs.msg import GeoPointStamped
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandLong, CommandTOL, MessageInterval, SetMode
@@ -52,6 +62,14 @@ SET_MODE_SERVICE = "/mavros/set_mode"
 TAKEOFF_SERVICE = "/mavros/cmd/takeoff"
 MESSAGE_INTERVAL_SERVICE = "/mavros/set_message_interval"
 COMMAND_SERVICE = "/mavros/cmd/command"
+ORIGIN_TOPIC = "/mavros/global_position/gp_origin"
+SET_ORIGIN_TOPIC = "/mavros/global_position/set_gp_origin"
+
+MAV_CMD_REQUEST_MESSAGE = 512
+MSG_ID_GPS_GLOBAL_ORIGIN = 49
+ORIGIN_RETRY_S = 2.0
+# The origin counts as confirmed while the FCU reported it this recently.
+ORIGIN_FRESH_S = 3.0
 
 MAV_CMD_DO_MOTOR_TEST = 209
 MOTOR_TEST_THROTTLE_PERCENT = 0
@@ -73,6 +91,7 @@ STREAM_RATES_HZ = {
     30: 10.0,  # ATTITUDE
     1: 2.0,  # SYS_STATUS
     147: 1.0,  # BATTERY_STATUS -> /mavros/battery
+    49: 1.0,  # GPS_GLOBAL_ORIGIN -> /mavros/global_position/gp_origin (once set)
 }
 
 Done = Callable[[bool, str], None]
@@ -91,12 +110,18 @@ class ArduCopterVehicle:
         self._position_at: Optional[float] = None
         self._battery_v: Optional[float] = None
         self._battery_at: Optional[float] = None
+        self._origin_at: Optional[float] = None
+        self._origin = None  # (lat, lon, alt) as reported by the FCU
+        self._origin_sent_this_link = False
+        self._origin_last_try: Optional[float] = None
 
         # BEST_EFFORT matches both reliable and best-effort MAVROS publishers.
         qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, depth=10)
         node.create_subscription(State, STATE_TOPIC, self._on_state, qos)
         node.create_subscription(PoseStamped, LOCAL_POSITION_TOPIC, self._on_pose, qos)
         node.create_subscription(BatteryState, BATTERY_TOPIC, self._on_battery, qos)
+        node.create_subscription(GeoPointStamped, ORIGIN_TOPIC, self._on_origin, qos)
+        self._set_origin_pub = node.create_publisher(GeoPointStamped, SET_ORIGIN_TOPIC, 10)
 
         self._set_mode_client = node.create_client(SetMode, SET_MODE_SERVICE)
         self._takeoff_client = node.create_client(CommandTOL, TAKEOFF_SERVICE)
@@ -118,6 +143,16 @@ class ArduCopterVehicle:
         self._battery_v = float(msg.voltage)
         self._battery_at = time.monotonic()
 
+    def _on_origin(self, msg: GeoPointStamped) -> None:
+        p = msg.position
+        if self._origin_at is None:
+            self._log.warning(
+                f"[ardupilot_vehicle] EKF origin confirmed by FCU: lat {p.latitude:.6f} "
+                f"lon {p.longitude:.6f} alt {p.altitude:.1f}"
+            )
+        self._origin = (p.latitude, p.longitude, p.altitude)
+        self._origin_at = time.monotonic()
+
     def snapshot(self) -> VehicleSnapshot:
         now = time.monotonic()
         age = lambda t: None if t is None else now - t  # noqa: E731
@@ -131,6 +166,7 @@ class ArduCopterVehicle:
             position_age_s=age(self._position_at),
             battery_voltage_v=self._battery_v,
             battery_age_s=age(self._battery_at),
+            ekf_origin_age_s=age(self._origin_at),
         )
 
     # -- commands -------------------------------------------------------------
@@ -217,6 +253,46 @@ class ArduCopterVehicle:
                 done(False, str(exc))
                 return
         done(result.success and result.state_confirmed, result.message)
+
+    def ensure_ekf_origin(self, lat: float, lon: float, alt: float) -> None:
+        """Call periodically. While the FCU hasn't recently reported an
+        origin: send SET_GPS_GLOBAL_ORIGIN (once per FCU connection, so an
+        existing origin is never moved in flight) and ask the FCU to report
+        it. Call reset_link() when the FCU (re)connects."""
+        now = time.monotonic()
+        if self._origin_at is not None and now - self._origin_at < ORIGIN_FRESH_S:
+            return
+        if self._origin_last_try is not None and now - self._origin_last_try < ORIGIN_RETRY_S:
+            return
+        self._origin_last_try = now
+        if not self._origin_sent_this_link:
+            msg = GeoPointStamped()
+            msg.header.stamp = self._node.get_clock().now().to_msg()
+            msg.position.latitude = float(lat)
+            msg.position.longitude = float(lon)
+            msg.position.altitude = float(alt)
+            self._set_origin_pub.publish(msg)
+            self._origin_sent_this_link = True
+            self._log.warning(
+                f"[ardupilot_vehicle] setting EKF origin: lat {lat:.6f} lon {lon:.6f} alt {alt:.1f}"
+            )
+        self._request_message(MSG_ID_GPS_GLOBAL_ORIGIN)
+
+    def reset_link(self) -> None:
+        """The FCU (re)connected -- e.g. after a reboot it has no origin."""
+        self._origin_sent_this_link = False
+        self._origin_last_try = None
+        self._origin_at = None
+
+    def _request_message(self, message_id: int) -> None:
+        if not self._command_client.service_is_ready():
+            return
+        request = CommandLong.Request()
+        request.broadcast = False
+        request.command = MAV_CMD_REQUEST_MESSAGE
+        request.confirmation = 0
+        request.param1 = float(message_id)
+        self._command_client.call_async(request)
 
     def request_streams(self) -> None:
         """Best effort: ask the FCU for the message rates this layer needs.

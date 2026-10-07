@@ -69,6 +69,14 @@ CONFIG = HoverConfig(
     min_battery_voltage_v=None,
 )
 
+# EKF origin the Jetson gives the Pixhawk (there is no GPS indoors). Any
+# fixed point works for local flight; it also sets the magnetic declination
+# ArduCopter computes (COMPASS_AUTODEC), so roughly the test site is best.
+# TODO(hardware): set to the approximate test site (lat, lon in degrees,
+# alt in metres). Default: the geographic centre of India -- declination
+# differs by only a degree or two across India.
+EKF_ORIGIN = (20.5937, 78.9629, 0.0)
+
 # A START must follow a /gcs/mission_select naming this mission within this
 # window (radio_command_node publishes both back to back).
 _SELECTION_MAX_AGE_S = 5.0
@@ -157,10 +165,13 @@ class HoverMissionNode(Node):
     def _tick(self) -> None:
         snap = self._vehicle.snapshot()
         if snap.fcu_connected and not self._streams_requested:
+            self._vehicle.reset_link()
             self._vehicle.request_streams()
             self._streams_requested = True
         elif not snap.fcu_connected:
             self._streams_requested = False
+        if snap.fcu_connected:
+            self._vehicle.ensure_ekf_origin(*EKF_ORIGIN)
         with self._lock:
             self._run(self._mission.tick(time.monotonic(), snap))
 

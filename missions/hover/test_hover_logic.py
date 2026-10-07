@@ -19,8 +19,8 @@ GROUND = (1.0, 2.0, 0.1)
 
 
 def snap(mode="STABILIZE", armed=False, pos=GROUND, connected=True, state_age=0.2,
-         pos_age=0.1, volts=None, volts_age=0.5):
-    return VehicleSnapshot(connected, state_age, armed, mode, pos, pos_age, volts, volts_age)
+         pos_age=0.1, volts=None, volts_age=0.5, origin_age=0.5):
+    return VehicleSnapshot(connected, state_age, armed, mode, pos, pos_age, volts, volts_age, origin_age)
 
 
 def at_height(h, mode=GUIDED, armed=True, dx=0.0):
@@ -274,3 +274,19 @@ def test_internal_error_while_landing_keeps_landing():
     m.internal_error(0.3, "first")
     assert m.internal_error(0.4, "again") == []
     assert m.state == LANDING
+
+
+# -- EKF origin ----------------------------------------------------------------
+
+
+def test_preflight_refuses_without_ekf_origin_nothing_armed():
+    for age in (None, 60.0):
+        m = HoverMission(CFG)
+        actions = m.start(0.0, snap(origin_age=age))
+        assert actions == []
+        assert m.state == FAILED and "EKF origin not set" in m.detail
+
+
+def test_preflight_passes_with_fresh_ekf_origin():
+    m = HoverMission(CFG)
+    assert m.start(0.0, snap(origin_age=1.0)) == [Action("set_mode", GUIDED)]

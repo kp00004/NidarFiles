@@ -45,6 +45,8 @@ timeout 5 ros2 topic echo --once /mavros/state 2>&1 | head -12
 echo "--- local position (the hover needs this; empty = no indoor position estimate)"
 timeout 5 ros2 topic echo --once /mavros/local_position/pose 2>&1 | head -12
 timeout 6 ros2 topic hz /mavros/local_position/pose 2>&1 | tail -2
+echo "--- EKF origin (set by the hover mission node at startup; GUIDED takeoff needs it)"
+if timeout 5 ros2 topic echo --once /mavros/global_position/gp_origin 2>/dev/null | grep -E "latitude|longitude"; then echo "OK: EKF origin set"; else echo "PROBLEM: no EKF origin reported (is start_jetson.sh running?)"; fi
 echo "--- battery"
 timeout 5 ros2 topic echo --once /mavros/battery 2>&1 | grep -E "voltage|percentage" | head -2
 echo "--- related topics"
