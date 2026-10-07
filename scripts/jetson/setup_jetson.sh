@@ -10,6 +10,12 @@
 # after ~/ros2_ws, so this build of nidar_autonomy takes precedence.
 set -euo pipefail
 
+if [ "$(id -u)" -eq 0 ]; then
+  echo "ERROR: run this as your normal user, NOT with sudo (it calls sudo itself where needed;
+  as root it would build into /root/nidar_ws)." >&2
+  exit 1
+fi
+
 NIDAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OVERLAY_WS="${NIDAR_OVERLAY_WS:-$HOME/nidar_ws}"
 
@@ -21,8 +27,11 @@ if [ ! -f /opt/ros/humble/setup.bash ]; then
   exit 1
 fi
 # shellcheck disable=SC1091
+# ROS setup files read unset variables -- not compatible with set -u.
+set +u
 source /opt/ros/humble/setup.bash
 [ -f "$HOME/ros2_ws/install/setup.bash" ] && source "$HOME/ros2_ws/install/setup.bash"
+set -u
 
 echo "== apt packages (pyserial, MAVROS, colcon)"
 # Only installs what is missing, so a Jetson with no internet (no Wi-Fi

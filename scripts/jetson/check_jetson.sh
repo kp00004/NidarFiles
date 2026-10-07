@@ -10,10 +10,12 @@ PIXHAWK_IP="${NIDAR_PIXHAWK_IP:-192.168.144.14}"
 JETSON_ETH_IP="${NIDAR_JETSON_ETH_IP:-192.168.144.1}"
 ETH_IF="${NIDAR_ETH_IF:-eno1}"
 
+set +u  # ROS setup files read unset variables
 source /opt/ros/humble/setup.bash 2>/dev/null
 [ -f "$HOME/ros2_ws/install/setup.bash" ] && source "$HOME/ros2_ws/install/setup.bash"
 [ -f "$HOME/nidar_ws/install/setup.bash" ] && source "$HOME/nidar_ws/install/setup.bash"
 
+set -u
 section() { echo; echo "=== $*"; }
 
 section "System"

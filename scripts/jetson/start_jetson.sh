@@ -23,6 +23,7 @@
 # Values below are the documented setup (custom-gcs Daily Startup SOP);
 # override with environment variables if the hardware differs.
 set -uo pipefail
+[ "$(id -u)" -eq 0 ] && { echo "ERROR: run as your normal user, not with sudo." >&2; exit 1; }
 
 NIDAR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PIXHAWK_IP="${NIDAR_PIXHAWK_IP:-192.168.144.14}"
@@ -63,11 +64,13 @@ run() {  # run <name> <command...>  -- background, logged
 }
 
 # -- environment ----------------------------------------------------------------
+set +u  # ROS setup files read unset variables
 source /opt/ros/humble/setup.bash || fail "ROS 2 Humble not found"
 [ -f "$HOME/ros2_ws/install/setup.bash" ] && source "$HOME/ros2_ws/install/setup.bash"
 [ -f "$HOME/nidar_ws/install/setup.bash" ] || fail "~/nidar_ws not built -- run scripts/jetson/setup_jetson.sh"
 source "$HOME/nidar_ws/install/setup.bash"
 python3 -c "import nidar_autonomy.radio_command_node" 2>/dev/null || fail "nidar_autonomy (with radio_command_node) not importable -- rebuild with setup_jetson.sh"
+set -u
 
 # -- safety: one authoritative execution path ----------------------------------
 if pgrep -f "nidar_autonomy/mission_state_node|lib/nidar_autonomy/mission_state_node" >/dev/null; then
