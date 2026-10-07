@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: #0b0f14;
+  color: #e6edf3;
+  /* Tells the browser this page is dark-themed so native form controls it
+     draws itself -- a <select>'s open option-list popup, scrollbars --
+     use dark-appropriate default colors instead of the OS light theme.
+     Without this, MissionSelectPanel.tsx's two <select>s render their
+     closed box in our own dark styling but their native popup list in a
+     jarring light box (browser-drawn, ignores our CSS by default). */
+  color-scheme: dark;
+}

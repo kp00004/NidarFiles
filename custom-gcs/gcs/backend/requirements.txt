@@ -1,0 +1,7 @@
+fastapi==0.141.1
+uvicorn==0.52.4
+roslibpy==2.1.0
+httpx==0.28.1
+pytest==9.1.1
+pyserial==3.5
+pymavlink==2.4.50
