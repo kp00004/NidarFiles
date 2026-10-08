@@ -39,6 +39,8 @@ export default function App() {
   // Bench Setup section: shown only when the backend itself was started for
   // setup (start_gcs.ps1 -Setup) -- its routes don't exist otherwise.
   const [setupEnabled, setSetupEnabled] = useState(false);
+  // "mission" = the operator panels; "setup" = Pixhawk parameters (setup mode only).
+  const [view, setView] = useState<"mission" | "setup">("mission");
   useEffect(() => {
     let mounted = true;
     getHealth()
@@ -62,7 +64,47 @@ export default function App() {
         {subtitle}
       </div>
 
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+      {setupEnabled && (
+        <div role="tablist" aria-label="View" className="flex gap-1 mb-3 border-b border-border">
+          {(
+            [
+              ["mission", "Mission"],
+              ["setup", "Setup: Pixhawk parameters"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={view === id}
+              className={`px-3 py-1.5 text-sm rounded-t-md border border-b-0 ${
+                view === id ? "bg-panel border-border text-text font-semibold" : "border-transparent text-dim hover:text-text"
+              }`}
+              onClick={() => setView(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {setupEnabled && view === "setup" && (
+        <>
+          <div className="mb-2 text-xs uppercase tracking-wide text-warn font-semibold">
+            Bench setup — not for missions. The Jetson refuses writes while armed or while a mission runs.
+          </div>
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+            <SetupPanel />
+          </div>
+        </>
+      )}
+
+      {/* The mission panels stay mounted on the Setup tab (only hidden), so
+          Mission Control keeps polling and START/ABORT stay one click away. */}
+      <div
+        data-testid="mission-panels"
+        className={view === "mission" ? "grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3" : "hidden"}
+      >
         <ConnectionPanel telemetry={telemetry} />
         <FlightPanel telemetry={telemetry} />
         <MissionPanel telemetry={telemetry} />
@@ -79,17 +121,6 @@ export default function App() {
         <CameraPanel />
       </div>
 
-
-      {setupEnabled && (
-        <>
-          <div className="mt-6 mb-2 text-xs uppercase tracking-wide text-warn font-semibold">
-            Bench setup — Pixhawk parameters (not for missions; writes refused while armed)
-          </div>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
-            <SetupPanel />
-          </div>
-        </>
-      )}
 
       {simulationEnabled && (
         <>

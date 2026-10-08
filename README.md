@@ -1,433 +1,443 @@
 # NidarFiles — NIDAR AirMouse: radio START → real hover
 
-> **Status (2026-10-08): radio-only (no Wi-Fi link). On the real hardware:
-> radio START/ABORT, telemetry, ARM via radio START, and the Jetson-set EKF
-> origin all work. Current blocker: the EKF keeps dropping the optical flow
-> (MTF-01) on the ground, so ArduCopter refuses to arm in GUIDED.** No
-> flight yet. See "Where we stopped" at the end of this file.
+> **Status (2026-10-08).** Radio-only (no Wi-Fi). Proven on the real
+> hardware, props off: radio START/ABORT, telemetry over the radio, ARM via
+> radio START, the full Hover sequence (GUIDED → ARM → TAKEOFF → LAND →
+> disarm), the Motor Test mission, and the EKF origin set by the Jetson.
+> **Not flown yet.** Before the first flight: compass + accelerometer
+> calibration, flow calibration, RC transmitter, failsafes, charged battery
+> — see [11. Pre-flight checklist](#11-pre-flight-checklist-first-hover).
 
-## What this is
+New here? Read sections 1–5 in order, then 6–7 each session.
 
-NIDAR AirMouse is an autonomous indoor (GPS-denied) search-and-rescue drone.
-This workspace implements the first real flight mission: **press START on the
-GCS and the drone takes off, hovers, and lands.**
+**Contents:** 1 What this is · 2 How it fits together · 3 What you need ·
+4 First-time setup · 5 Every session: start-up and checks · 6 What dry-run
+does · 7 Missions · 8 Setup tab (Pixhawk parameters) · 9 Updating the code ·
+10 Safety · 11 Pre-flight checklist · 12 Troubleshooting · 13 Pixhawk
+configuration · 14 For developers · 15 Test status · 16 Where we stopped
 
-- **GCS laptop**: the operator panel. Shows telemetry and has exactly two
-  commands, START (for the mission chosen in the dropdown) and ABORT.
-- **MicroLR900 radios (900 MHz)**: the **only** link between the laptop and
-  the drone. They carry START/ABORT from the laptop to the **Jetson**, and
-  telemetry from the Jetson back. The radio link ends at the Jetson; the
-  Pixhawk is not on it. **There is no Wi-Fi/hotspot link.**
-- **Jetson Orin Nano**: the mission computer. Receives the radio command,
-  validates it, runs the hover mission, and commands the Pixhawk via MAVROS.
-- **Pixhawk 6X (ArduCopter 4.6.3)**: flies the drone (GUIDED takeoff, position
-  hold, LAND), using its EKF3 indoor position estimate.
-- **Mission dropdown**: lists the missions the GCS can start: **Hover** and
-  **Motor Test** (props-off bench check, see "Motor Test" below).
+---
 
-## Architecture
+## 1. What this is
+
+NIDAR AirMouse is an autonomous indoor (no GPS) search-and-rescue drone. This
+repository makes its first real mission work: **press START on the laptop and
+the drone takes off, hovers, and lands.**
+
+| Part | What it does |
+|---|---|
+| **GCS laptop** (Windows or Linux) | The operator panel in a web browser. Shows the drone's state and has exactly two commands: **START** (the mission chosen in the dropdown) and **STOP / ABORT**. |
+| **2 × MicroLR900 radios (900 MHz)** | The **only** link between the laptop and the drone: commands out, telemetry back. There is **no Wi-Fi**. |
+| **Jetson Orin Nano** (on the drone, Ubuntu Linux + ROS 2) | The mission computer: receives the radio command, checks it, runs the mission, talks to the Pixhawk. |
+| **Pixhawk 6X** (ArduCopter 4.6.3) | The flight controller: actually flies the drone. Connected to the Jetson by Ethernet. |
+| **MicoAir MTF-01** (on the Pixhawk's TELEM1) | Optical flow + downward rangefinder: the drone's indoor position source. |
+
+Missions in the dropdown: **Hover** (take off to 0.5 m, hold 10 s, land) and
+**Motor Test** (props off: spin each motor in turn).
+
+## 2. How it fits together
 
 ```
 COMMANDS (START / ABORT)
-GCS laptop ──USB── MicroLR900 )))) 900 MHz )))) MicroLR900 ──USB serial── Jetson
-                                                                           │
-   radio_command_node ─▶ /gcs/mission_select + /gcs/command ─▶ command_node │
-   ─▶ missions/hover/mission.py ─▶ ArduCopterVehicle ─▶ MAVROS ─Ethernet─▶ Pixhawk 6X ─▶ drone
+Laptop ──USB── MicroLR900 )))) 900 MHz )))) MicroLR900 ──USB── Jetson ──Ethernet── Pixhawk 6X
+               radio_command_node checks the command ─▶ mission node ─▶ MAVROS ─▶ Pixhawk
 
 TELEMETRY (same radio, other direction)
-Pixhawk ─▶ MAVROS ─▶ Jetson radio_command_node ─▶ MicroLR900 )))) MicroLR900 ─▶ GCS backend ─▶ operator panel
-   FCU state, battery, position, attitude, FCU messages, hover progress (~250 B/s)
+Pixhawk ─▶ MAVROS ─▶ Jetson radio_command_node ─▶ radio ─▶ laptop GCS ─▶ operator panel
+   flight mode, armed, battery, position, attitude, Pixhawk messages, mission progress
 ```
 
-**The telemetry-radio command terminates at the Jetson. The Jetson then
-communicates with the Pixhawk through MAVROS.**
+- The radio ends at the **Jetson**, not the Pixhawk. The Jetson commands the
+  Pixhawk through **MAVROS** over Ethernet.
+- Every START is checked on the Jetson first (known mission, mission
+  program running, Pixhawk connected, nothing else running). The panel shows
+  **"Jetson ACCEPTED"** or **"REJECTED: <reason>"** — it never claims success
+  without the Jetson's answer.
+- **ABORT** is always accepted: on the ground → disarm; in the air → **LAND**
+  (never a mid-air motor stop).
+- Not available without Wi-Fi: live video, map and perception panels (the
+  radio is too slow). The missions here don't use them.
 
-START path in detail:
+## 3. What you need
 
-1. Operator selects **Hover** and presses **START**.
-2. GCS backend (`custom-gcs/gcs/backend/app/radio_link.py`) sends
-   `COMMAND_LONG(MAV_CMD_USER_1)` on COM5: START, mission code 1 (Hover), a
-   nonce, magic 4242, protocol version 2. It resends the same nonce until the
-   Jetson answers (5 tries).
-3. Jetson `radio_command_node` decodes it and checks it: known mission, hover
-   mission node alive, MAVROS connected to the Pixhawk, no run in progress.
-   It replies `COMMAND_ACK` ACCEPTED, or REJECTED with a reason
-   (`UNKNOWN_MISSION`, `MISSION_NOT_READY`, `FCU_NOT_CONNECTED`,
-   `MISSION_BUSY`, `BAD_PROTOCOL_VERSION`).
-4. If accepted it publishes `/gcs/mission_select {"mission_id":"hover"}` then
-   `/gcs/command "start"`; `command_node` validates it; the hover mission
-   acts on it.
-5. Hover mission: preflight checks → GUIDED → ARM → TAKEOFF → hold → LAND →
-   ArduCopter disarms itself after touchdown.
-6. GCS shows each confirmed stage: Jetson ACK → mission state (radio
-   heartbeat + hover status) → vehicle state (relayed FCU telemetry), all
-   over the radio. It never reports success without the Jetson's ACK.
+**Hardware:** the drone (Pixhawk + Jetson + MTF-01 + radio), the second
+MicroLR900 radio for the laptop, a charged 4S battery, an RC transmitter for
+the safety pilot, a monitor + keyboard for the Jetson, a USB cable for the
+Pixhawk (Mission Planner).
 
-ABORT path: same radio path, always accepted by the Jetson. On the ground
-while arming → DISARM. **Airborne → LAND mode (controlled descent), never a
-mid-air disarm.** If a pilot changes the flight mode on the RC transmitter,
-the mission stops commanding immediately and never fights the pilot.
+**Software on the laptop**
 
-There is no Wi-Fi at all: no hotspot, no rosbridge. The GCS has no way to
-publish `/gcs/command`; only `radio_command_node` on the Jetson does. Not
-available without Wi-Fi: live video, map and perception panels (the radio
-is too slow); the hover mission doesn't use them.
+| | Windows | Linux (Ubuntu/Debian) |
+|---|---|---|
+| Git | `winget install Git.Git` | `sudo apt install git` |
+| Python 3.10+ | `winget install Python.Python.3.12` | `sudo apt install python3 python3-venv python3-pip` |
+| Node.js 18+ (builds the panel) | `winget install OpenJS.NodeJS.LTS` | Node 18+ from [nodejs.org](https://nodejs.org) or `nvm`; check `node --version` |
+| Radio USB driver | Silicon Labs **CP210x** driver if no COM port appears | built in |
+| Mission Planner (Pixhawk setup/calibration) | [ardupilot.org](https://ardupilot.org/planner/) | (use a Windows PC, or QGroundControl) |
 
-## Repository structure
+**Software on the Jetson:** Ubuntu 22.04 with ROS 2 Humble (JetPack).
+`setup_jetson.sh` installs the rest (MAVROS, pyserial, colcon) if missing —
+that step needs internet once.
+
+## 4. First-time setup
+
+### 4.1 Laptop: get the code
+
+Pick the terminal you use; each block is complete on its own.
+
+**Windows — Command Prompt (CMD)**
+```bat
+cd /d D:\
+git clone https://github.com/kp00004/NidarFiles.git
+cd /d D:\NidarFiles
+```
+
+**Windows — PowerShell**
+```powershell
+Set-Location D:\
+git clone https://github.com/kp00004/NidarFiles.git
+Set-Location D:\NidarFiles
+```
+
+**Linux laptop — terminal**
+```bash
+cd ~
+git clone https://github.com/kp00004/NidarFiles.git
+cd ~/NidarFiles
+sudo usermod -aG dialout $USER     # once: permission for the radio's USB port; then log out and back in
+```
+
+The first GCS start (section 5.3) creates the Python environment and builds
+the panel automatically (a few minutes).
+
+### 4.2 Jetson: get the code and build (monitor + keyboard, internet once)
+
+```bash
+git clone https://github.com/kp00004/NidarFiles.git ~/NidarFiles
+~/NidarFiles/scripts/jetson/setup_jetson.sh
+```
+
+Run `setup_jetson.sh` as your normal user — **not with `sudo`** (it asks for
+your password itself where needed). It:
+1. installs missing packages (MAVROS, pyserial, colcon),
+2. adds you to `dialout` (permission for the radio) — **log out and back in** if it says so,
+3. offers to disable **ModemManager** — answer **`y`** (it grabs USB radios),
+4. builds the Jetson code into `~/nidar_ws`.
+
+It ends with `Summary: 2 packages finished`.
+
+### 4.3 Pixhawk: one-time configuration
+
+Done once with Mission Planner over USB — see [13. Pixhawk configuration](#13-pixhawk-configuration).
+Already done on this drone except the calibrations in section 11.
+
+### 4.4 Radios
+
+Both MicroLR900 radios must match: 115200 baud, DUPLEX, HIGH rate, MAX
+power, address 1000, channel 0 (already set on this pair).
+
+## 5. Every session: start-up and checks
+
+### 5.1 Hardware checklist (before power-on)
+
+- [ ] **Props OFF** for anything on the bench (they go on only for a planned flight).
+- [ ] Battery charged (4S: ≥ 15.2 V; full = 16.8 V) and connected.
+- [ ] Jetson ↔ Pixhawk Ethernet cable connected.
+- [ ] Radio #1 in the Jetson's USB, radio #2 in the laptop's USB, antennas on.
+- [ ] MTF-01 lens clean and unobstructed; drone on a **textured, well-lit** surface (plain/shiny floors and shadow break optical flow).
+- [ ] Drone **still** while the Pixhawk powers up (it calibrates its gyros then).
+
+### 5.2 Jetson: start the stack (one terminal)
+
+```bash
+~/NidarFiles/scripts/jetson/start_jetson.sh --dry-run   # safe: commands are answered but never executed
+~/NidarFiles/scripts/jetson/start_jetson.sh             # LIVE: START really runs the mission
+~/NidarFiles/scripts/jetson/start_jetson.sh --setup     # LIVE + allows parameter writes from the Setup tab
+```
+
+Options can be combined (`--dry-run --setup`). **Ctrl+C** stops everything.
+Logs: `~/NidarFiles/logs/<date_time>/` (one file per program).
+
+What you should see, in order:
+
+| Line | Meaning |
+|---|---|
+| `Pixhawk reachable at 192.168.144.14` | Ethernet link OK (the script sets the Jetson's address if missing) |
+| `MAVROS connected` | Jetson ↔ Pixhawk talking |
+| `started command_node … radio_command_node … hover_mission … motor_test_mission` | all programs running |
+| `radio serial open: /dev/serial/by-id/usb-Silicon_Labs_CP2102…` | Jetson radio found |
+| `stream 32 @ 20.0 Hz: ok` (×4) | Pixhawk sends position/attitude/battery fast enough |
+| `setting EKF origin: lat 12.916500 lon 79.132500` then `EKF origin confirmed by FCU` | the Pixhawk knows where "zero" is (needed for GUIDED take-off indoors) |
+| `DRY RUN: …` or `LIVE: …` | which mode you started |
+
+Read-only diagnostics at any time (second terminal):
+```bash
+~/NidarFiles/scripts/jetson/check_jetson.sh
+```
+Look for `OK:` lines: radio port, `dialout`, ModemManager inactive, `eno1` address, Pixhawk ping, MAVROS state, **local position publishing**, **EKF origin set**, battery voltage.
+
+### 5.3 Laptop: start the GCS
+
+**Windows — PowerShell**
+```powershell
+Set-Location D:\NidarFiles
+powershell -ExecutionPolicy Bypass -File .\scripts\gcs\start_gcs.ps1
+```
+
+**Windows — Command Prompt (CMD)**
+```bat
+cd /d D:\NidarFiles
+powershell -ExecutionPolicy Bypass -File scripts\gcs\start_gcs.ps1
+```
+
+**Linux laptop**
+```bash
+cd ~/NidarFiles
+./scripts/gcs/start_gcs.sh
+```
+
+Options: radio port — Windows `-RadioPort COM7` (find it in Device Manager →
+Ports), Linux `--port /dev/ttyUSB1` (`ls /dev/ttyUSB*`); Setup tab —
+Windows `-Setup`, Linux `--setup`.
+
+The browser opens **http://127.0.0.1:8000/ui/**. Keep the terminal open
+(closing it stops the GCS).
+
+### 5.4 Checks in the panel before any START
+
+| Where | Expected | If not |
+|---|---|---|
+| Mission Control → **Radio link** | `LINK UP · heartbeat 0.x s ago` | section 12: RADIO LINK DOWN / PORT NOT OPEN |
+| Mission Control → **Mission** | mission name + `IDLE` | Jetson stack not running, or mission program crashed (its log) |
+| Mission Control → **Vehicle** | `DISARMED` + flight mode | `Pixhawk not connected`: MAVROS/Ethernet (check_jetson.sh) |
+| **Battery** | voltage above `BATT_ARM_VOLT` (14.7 V for flight) | charge the battery |
+| **Position / Velocity** | numbers, changing when the drone is carried | no indoor position: optical flow/EKF (section 12) |
+| **Messages** panel | no red `CRITICAL`/`ERROR` lines like `PreArm: …` | each has a plain-English hint under it |
+| Footer | `telemetry: MicroLR900 command radio` | GCS started the wrong way |
+
+## 6. What dry-run does
+
+`start_jetson.sh --dry-run` is the **safe test mode**:
+
+- Everything starts as normal: MAVROS, the radio, telemetry, the missions.
+- A START/ABORT from the laptop **is received, checked and answered** — the
+  panel shows `Jetson ACCEPTED START` (or the rejection reason) exactly as in
+  live mode, and the Jetson logs `DRY RUN: not publishing 'start'`.
+- But the command is **never passed on to the missions**, so **nothing can
+  arm, spin or fly**. The mission stays `idle`.
+
+Use it to test the radio link, the panel and the START checks with no risk.
+Use live mode (no `--dry-run`) only when you mean the mission to run.
+
+## 7. Missions
+
+Every mission step also appears in the **Messages** panel, labelled with the
+mission name (e.g. `Hover: armed -- taking off to 0.50 m`), next to the
+Pixhawk's own messages. The Pixhawk's messages explain refusals (e.g.
+`PreArm: Need Position Estimate`).
+
+### 7.1 Hover (real flight)
+
+1. Checks in 5.4 pass. **Mission: Hover** → **START**.
+2. The panel shows `Jetson ACCEPTED START (hover)`, then the mission goes through these steps (Mission line + Messages panel):
+
+| State | Message |
+|---|---|
+| `preflight` → `setting_guided` | `Hover: requesting GUIDED` |
+| `arming` | `Hover: GUIDED confirmed -- arming` |
+| `taking_off` | `Hover: armed -- taking off to 0.50 m` |
+| `hovering` | `Hover: hovering at 0.50 m for 10s` |
+| `landing` | `Hover: hover complete -- landing` |
+| `complete` | `Hover: landed and disarmed -- hover complete` |
+
+3. **ABORT** any time: before arming → stops; while arming → disarms; in the air → LAND.
+
+Automatic stops (each lands or disarms, and shows the reason): preflight
+problems (`Hover: preflight failed: …` — e.g. no position, no EKF origin,
+already armed), take-off not acknowledged, target altitude not reached in
+15 s, **more than 0.5 m above target** (e.g. lifted by hand), drifting more
+than 0.75 m sideways, position lost, Pixhawk link lost. If the safety pilot
+switches flight mode on the RC transmitter, the mission stops commanding at
+once (`pilot has control`).
+
+Settings: `CONFIG` at the top of `missions/hover/mission.py` (take-off
+height, hold time, limits). The EKF origin (Vellore) is `EKF_ORIGIN` there.
+
+### 7.2 Motor Test (PROPS OFF)
+
+Checks every motor runs, in the right order and direction. Uses ArduCopter's
+own motor test (the same as Mission Planner's Motor Test page) — no position
+estimate needed.
+
+1. **Props off.** Jetson started **live**. **Mission: Motor Test** → **START**.
+2. Motors spin one at a time at 8 % for 5 s, 1 s apart: **A** (front-right),
+   **B** (back-right), **C** (back-left), **D** (front-left). Messages:
+   `Motor Test: motor A (1/4) at 8% for 5 s` … then
+   `Motor Test: all 4 motors tested -- check order and direction`, plus the
+   Pixhawk's `starting motor test` / `finished motor test`.
+3. Check each against the ArduPilot Quad-X diagram: right position; A and C
+   spin counter-clockwise, B and D clockwise.
+4. **ABORT** stops the running motor immediately. Each motor also stops by
+   itself after 5 s even if the radio or Jetson fails.
+
+ArduCopter refuses (message shown) if the vehicle is armed, the safety switch
+isn't pressed, or the RC isn't calibrated. Settings: `CONFIG` in
+`missions/motor_test/mission.py`.
+
+The Jetson refuses a START for one mission while the other is running
+(`MISSION_BUSY`).
+
+## 8. Setup tab (Pixhawk parameters)
+
+For bench work only — **never during a mission**. Start both sides in setup mode:
+
+- Jetson: `start_jetson.sh --setup`
+- Laptop: Windows `… start_gcs.ps1 -Setup`, Linux `./scripts/gcs/start_gcs.sh --setup`
+
+Two tabs appear at the top: **Mission** and **Setup: Pixhawk parameters**.
+In Setup: type a parameter name (or click one of the quick buttons), **Read**,
+change the value, **Write**. The value shown is always read back from the
+Pixhawk. The Jetson refuses writes while armed, while a mission runs, or
+without `--setup` — the reason is shown. Some parameters need a Pixhawk
+reboot to take effect. Calibrations (compass, accelerometer) still need
+Mission Planner, because the drone must be turned by hand.
+
+Without setup mode there are no tabs and no way to change parameters from the
+panel (the competition allows the operator only START and ABORT).
+
+## 9. Updating the code
+
+When new code is on GitHub:
+
+| Where | Command |
+|---|---|
+| Jetson | `git -C ~/NidarFiles pull` then `~/NidarFiles/scripts/jetson/setup_jetson.sh` (rebuild; harmless if nothing changed) |
+| Windows CMD | `cd /d D:\NidarFiles` then `git pull` |
+| Windows PowerShell | `Set-Location D:\NidarFiles; git pull` |
+| Linux laptop | `git -C ~/NidarFiles pull` |
+
+The GCS rebuilds the panel by itself at the next start. Restart both sides
+after updating.
+
+No internet on the Jetson: `scripts/gcs/make_jetson_bundle.ps1 -Destination E:\`
+(Windows) copies the Jetson files to a USB stick; copy `NidarFiles` from the
+stick to `~/` on the Jetson and run `setup_jetson.sh`.
+
+## 10. Safety
+
+- **Real hardware.** In live mode START (Hover) arms and flies; START (Motor Test) spins the motors. **Props off** unless a flight is planned.
+- First flights: props on, **tethered/netted**, people clear, low (0.5 m).
+- A **safety pilot with an RC transmitter** (mode switch with LAND and a manual mode, motor kill) is ready on every flight — the only abort independent of the laptop, radios and Jetson.
+- **Radio lost in flight:** the mission still finishes its hover and lands; ABORT is unavailable until the link returns — use the RC.
+- **Jetson/MAVROS failure:** the mission requests LAND if it still can; a mission program error makes it land/disarm instead of crashing. If the Jetson dies completely the drone holds position in GUIDED — the pilot takes over on the RC.
+- Pixhawk failsafes (battery, RC, EKF) stay active; the mission follows an FCU-initiated LAND and never overrides it.
+- Don't run `mission_state_node` with this stack (it would arm on START by itself); the scripts refuse.
+
+## 11. Pre-flight checklist (first hover)
+
+| # | Step | How |
+|---|---|---|
+| 1 | Accelerometer calibration | Mission Planner → Setup → Mandatory Hardware → Accel Calibration (6 positions) |
+| 2 | Compass calibration | … → Compass → Start, rotate the drone in every direction, away from metal |
+| 3 | RC transmitter | Radio Calibration; mode switch with STABILIZE / ALT_HOLD / LAND; motor kill switch; `FS_THR_ENABLE` (RC loss → LAND) |
+| 4 | Motor Test | section 7.2 — order and direction correct |
+| 5 | Optical flow | `FLOW_ORIENT_YAW` to match the mounting; flow calibration (`FLOW_FXSCALER/FYSCALER`) |
+| 6 | Failsafes | `BATT_FS_LOW_ACT` / `BATT_FS_CRT_ACT` → LAND, `FS_EKF_ACTION` → LAND |
+| 7 | Battery limits back to flight values | `BATT_ARM_VOLT 14.7`, `BATT_LOW_VOLT 14.5`, `BATT_CRT_VOLT 14.0` (bench used 13 / 13.2 / 12.8); battery charged |
+| 8 | `LOG_DISARMED = 0`, `ARMING_CHECK = 1` | Mission Planner or the Setup tab |
+| 9 | Bench Hover START, props off | GUIDED → ARM → TAKEOFF accepted, then `landed and disarmed (target altitude not reached in time -- landing)` — expected without props |
+| 10 | Manual hover on the RC (ALT_HOLD), tethered | drone stable, position estimate sensible |
+| 11 | Hover mission, tethered, safety pilot ready | section 7.1 |
+
+## 12. Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `PORT COM5 NOT OPEN` (Linux: `/dev/ttyUSB0`) | radio unplugged or another port: Device Manager → Ports / `ls /dev/ttyUSB*`; start with `-RadioPort` / `--port`; close other programs using it |
+| `RADIO LINK DOWN` | Jetson stack not running; Jetson radio missing (`check_jetson.sh`); radios not paired |
+| `START not accepted … never acknowledged` | same as RADIO LINK DOWN |
+| `REJECTED: MISSION_NOT_READY` | mission program not running/crashed — see `hover_mission.log` / `motor_test_mission.log` |
+| `REJECTED: FCU_NOT_CONNECTED` | MAVROS not connected: Ethernet cable, `ping 192.168.144.14`, `mavros.log` |
+| `REJECTED: MISSION_BUSY` | a mission is still running — wait or ABORT |
+| `Pixhawk not connected (no FCU telemetry)` | MAVROS lost the Pixhawk (rebooted? cable?) — `check_jetson.sh` |
+| `PreArm: Need Position Estimate` | optical flow not usable: light + texture under the drone; `RNGFND1_MAX_CM` must be 800 (not 8) |
+| EKF `started relative aiding` / `stopped aiding` repeating | same as above |
+| `PreArm: Check mag field` / `mag anomaly` | compass not calibrated or metal nearby — calibrate (section 11) |
+| `PreArm: Compass not healthy` | compass priority points at a missing compass — Mission Planner → Compass → Remove Missing |
+| `PreArm: Gyros inconsistent` | drone moved during power-up or still warming — reboot it still, wait 2 min; accel calibration |
+| `Battery … failsafe` / `below minimum arming voltage` | charge; the failsafe latches until the Pixhawk reboots |
+| `Hover: preflight failed: EKF origin not set` | hover log: was `EKF origin confirmed` printed? MAVROS connected? |
+| Setup tab: `writes disabled` | Jetson not started with `--setup` |
+| Jetson: `Permission denied` on a script | `chmod +x ~/NidarFiles/scripts/jetson/*.sh` |
+| Jetson: radio permission denied | not in `dialout`: rerun `setup_jetson.sh`, log out/in |
+| Windows: script "cannot be loaded … disabled on this system" | use `powershell -ExecutionPolicy Bypass -File …` as shown |
+
+## 13. Pixhawk configuration
+
+Current settings on this drone (ArduCopter 4.6.3):
+
+| Group | Parameters |
+|---|---|
+| MTF-01 on TELEM1 | `SERIAL1_PROTOCOL=1`, `SERIAL1_BAUD=115`, `SERIAL1_OPTIONS=1024`; sensor set to `Mav_APM`, `mav_id 200` via MicoAssistant (ArduPilot serial passthrough: `SERIAL_PASS2=1`, `SERIAL_PASSTIMO=120`, then back to `-1`) |
+| Optical flow / rangefinder | `FLOW_TYPE=5`, `RNGFND1_TYPE=10`, `RNGFND1_ORIENT=25`, `RNGFND1_MIN_CM=1`, `RNGFND1_MAX_CM=800`, `RNGFND1_GNDCLEAR=25` (cm, sensor height when landed) |
+| EKF (no GPS) | `EK3_SRC1_POSXY=0`, `EK3_SRC1_VELXY=5`, `EK3_SRC1_POSZ=1`, `EK3_SRC1_VELZ=0`, `EK3_SRC1_YAW=1`, `EK3_SRC_OPTIONS=0`; origin set by the Jetson |
+| GPS | `GPS1_TYPE=0`, `GPS2_TYPE=0` (no GPS fitted) |
+| Compass | built-in BMM150 (ID 331777) as priority 1, `COMPASS_USE=1` — **needs calibration** |
+| Checks / logging | `ARMING_CHECK=1`; `LOG_DISARMED=1` while bench testing |
+| Battery (bench values) | `BATT_ARM_VOLT=13`, `BATT_LOW_VOLT=13.2`, `BATT_CRT_VOLT=12.8` — restore 14.7 / 14.5 / 14.0 before flight |
+
+Network: Jetson `eno1` 192.168.144.1/24 ↔ Pixhawk 192.168.144.14 (MAVLink
+UDP 14550). The Jetson address is set by `start_jetson.sh` each time (not
+saved). Radio on the Jetson: `/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0`.
+
+## 14. For developers
 
 ```
 NidarFiles/
-├── custom-gcs/            GCS: FastAPI backend + React frontend (git, branch feature/hover-radio)
-├── onboard-autonomy/      Jetson ROS 2 packages (git, branch feature/hover-radio)
-├── missions/
-│   ├── hover/
-│   │   ├── mission.py         the hover mission (ROS 2 node, runs on the Jetson)
-│   │   ├── hover_logic.py     its decision logic (pure Python, unit-tested)
-│   │   └── test_hover_logic.py
-│   └── motor_test/
-│       ├── mission.py         motor test (ROS 2 node, Jetson) -- PROPS OFF
-│       ├── motor_test_logic.py
-│       └── test_motor_test_logic.py
-├── scripts/
-│   ├── jetson/  setup_jetson.sh, check_jetson.sh, start_jetson.sh
-│   └── gcs/     start_gcs.ps1, make_jetson_bundle.ps1 (USB pen drive), deploy_to_jetson.ps1 (SSH, needs a network)
-└── README.md
+├── custom-gcs/          GCS: FastAPI backend (gcs/backend) + React panel (gcs/frontend), docs/
+├── onboard-autonomy/    Jetson ROS 2 packages (nidar_autonomy: radio node, codec, vehicle layer)
+├── missions/            hover/ and motor_test/: mission.py (ROS node) + *_logic.py (pure, tested)
+└── scripts/             jetson/: setup, start, check · gcs/: start_gcs.ps1 / .sh, USB bundle
 ```
 
-Published as one repository: https://github.com/kp00004/NidarFiles (a plain
-copy -- not linked to the TeamArdra `custom-gcs` / `onboard-autonomy` repos).
+Key files: radio protocol `onboard-autonomy/nidar_autonomy/nidar_autonomy/telem_command_codec.py`
+(mirrored in `custom-gcs/gcs/backend/app/radio_protocol.py`), START rules
+`radio_command_logic.py`, telemetry `radio_telemetry.py` (both sides),
+parameter rules `param_bridge_logic.py`. Interface docs:
+`custom-gcs/docs/COMMUNICATION.md` §6.
 
-### What changed in the repos (branch `feature/hover-radio`)
+Run the tests (laptop, from the repo root; backend venv created by the GCS start script):
 
-onboard-autonomy (`nidar_autonomy/nidar_autonomy/`):
-
-| File | Change |
-|---|---|
-| `telem_command_codec.py` | Radio protocol: MAVLink2 stream parser, COMMAND_LONG/ACK/HEARTBEAT encoding, mission code, reason codes (pure Python, no pymavlink needed on the Jetson) |
-| `radio_command_logic.py` (new) | Accept/reject rules, duplicate (nonce) handling, ABORT always accepted |
-| `radio_command_node.py` (new) | Serial radio on the Jetson: receives START/ABORT, sends telemetry; replaces the old Pixhawk-routed `telem_command_bridge_node.py` (removed) |
-| `radio_telemetry.py` (new) | What telemetry goes over the radio, how often, staleness and rate limits (pure Python) |
-| `ardupilot_vehicle.py` (new) | ArduCopter control via MAVROS: set_mode, takeoff, stream rates, state snapshot; arm/disarm through the existing `FlightCommandClient` |
-| `vehicle_snapshot.py` (new) | Plain vehicle-state record used by mission logic |
-| `topics.py`, `setup.py`, `package.xml` | Topic constants, `radio_command_node` entry point, `python3-serial` dependency |
-| `flight_command.py`, `command_node.py`, `arming_guard.py` | **Unchanged** (reused as-is) |
-
-custom-gcs:
-
-| File | Change |
-|---|---|
-| `gcs/backend/app/radio_link.py`, `radio_protocol.py` (new) | Radio on COM5: send with retries, ACK by nonce, Jetson heartbeat, link status, hands telemetry on |
-| `gcs/backend/app/radio_telemetry.py` (new) | Telemetry from the radio, served to the panels in the same shape rosbridge gave (`GCS_TELEMETRY_SOURCE=radio`, default) |
-| `gcs/backend/app/main.py` | START = `POST /api/mission/start {mission}`, ABORT = `POST /api/command/abort`, both over the radio; `GET /api/radio/status`; mission-less START removed |
-| `gcs/backend/app/missions.py` | Exactly one mission: Hover (radio code 1) |
-| `gcs/backend/app/ros_client.py` | No longer advertises `/gcs/command` on rosbridge; only used with `GCS_TELEMETRY_SOURCE=rosbridge` (development against `sim/`) |
-| `gcs/frontend/src/components/ControlsPanel.tsx` | "Mission Control": Mission dropdown + START + ABORT + radio link + confirmed stages |
-| `MissionSelectPanel.tsx` | Removed (replaced by the above) |
-| `tools/telem_command.py` | Terminal START/ABORT tool using the backend's RadioLink |
-| `docs/COMMUNICATION.md` §6, `docs/DATA_MODELS.md` §8 | Radio protocol and topics documented |
-
-## Hardware and wiring
-
-```
-Laptop ──USB── MicroLR900  )))  MicroLR900 ──USB (CP2102)── Jetson Orin Nano ──Ethernet (eno1)── Pixhawk 6X
- COM5, 115200                                    /dev/serial/by-id/usb-Silicon_Labs_CP2102_..._0001-if00-port0
-                                                 (fallback /dev/ttyUSB0), 115200
-Jetson  192.168.144.1/24 on eno1   ◀──MAVLink2 UDP──▶   Pixhawk 192.168.144.14:14550 (UDP server)
-No Wi-Fi: the Jetson is operated with a monitor and keyboard, and code
-reaches it from GitHub with `git clone` / `git pull` (A.1).
-```
-
-Radio configuration in use: 115200 baud, DUPLEX, HIGH rate, MAX power,
-address 1000, channel 0. Indoor position/altitude sensors: see section B.
-
-## Software requirements (from the repositories)
-
-| Machine | Requirement |
-|---|---|
-| Jetson | Ubuntu 22.04, ROS 2 Humble, `ros-humble-mavros`, `python3-serial`, `colcon` (`setup_jetson.sh` installs any that are missing; that needs internet) |
-| Laptop | Windows, Python 3 (tested here with 3.14) + `gcs/backend/requirements.txt` (fastapi 0.141.1, uvicorn 0.52.4, roslibpy 2.1.0, pyserial 3.5, pymavlink 2.4.50); Node.js + npm for the frontend build (tested with Node 24); OpenSSH client for deployment |
-
-## A. Setup and running
-
-### 1. Get the code onto the Jetson (GitHub)
-
-The code is published at **https://github.com/kp00004/NidarFiles** (public).
-On the Jetson (monitor + keyboard), with internet for this step only:
-
-```bash
-mv ~/NidarFiles ~/NidarFiles.old 2>/dev/null     # keep any older copy aside
-git clone https://github.com/kp00004/NidarFiles.git ~/NidarFiles
-chmod +x ~/NidarFiles/scripts/jetson/*.sh ~/NidarFiles/missions/hover/mission.py
-```
-
-**Updating later:** after new code is pushed to GitHub, on the Jetson:
-
-```bash
-git -C ~/NidarFiles pull
-~/NidarFiles/scripts/jetson/setup_jetson.sh      # rebuilds ~/nidar_ws
-```
-
-Without internet on the Jetson: `scripts/gcs/make_jetson_bundle.ps1
--Destination E:\` copies the same files to a USB pen drive; on the Jetson
-copy `/media/$USER/<drive>/NidarFiles` to `~/`. (`deploy_to_jetson.ps1`
-does it over SSH if the laptop and Jetson ever share a network.)
-
-### 2. One-time Jetson setup
-
-```bash
-~/NidarFiles/scripts/jetson/setup_jetson.sh    # apt deps, dialout, ModemManager, build ~/nidar_ws
-# log out/in if it added you to dialout
-```
-
-It builds onboard-autonomy into a separate overlay workspace `~/nidar_ws`,
-leaving the existing `~/ros2_ws` untouched.
-
-### 3. Start the Jetson stack (one terminal)
-
-```bash
-~/NidarFiles/scripts/jetson/start_jetson.sh --dry-run   # radio test: ACK + log only, nothing can arm
-~/NidarFiles/scripts/jetson/start_jetson.sh             # LIVE: a radio START flies the hover
-```
-
-It restores the `eno1` address if missing, checks the Pixhawk answers, starts
-MAVROS (`apm.launch fcu_url:=udp://@192.168.144.14:14550`) and waits for
-`connected: true`. Then it starts `command_node`, `heartbeat_node`,
-`radio_command_node` (commands + telemetry, `NIDAR_TELEMETRY_RATE_HZ`,
-default 2) and the hover mission. No rosbridge. It refuses to run if
-`mission_state_node` is running.
-Logs go to `~/NidarFiles/logs/<time>/`. Ctrl+C stops everything.
-
-`scripts/jetson/check_jetson.sh` prints read-only diagnostics at any time.
-
-### 4. Start the GCS (laptop)
-
-```powershell
-cd D:\NidarFiles
-.\scripts\gcs\start_gcs.ps1                 # -RadioPort COM5 by default
-```
-
-It opens `http://127.0.0.1:8000/ui/`. On the first run it creates the
-backend virtualenv; it (re)builds the frontend whenever its sources changed.
-
-Debug alternative without the UI: `python custom-gcs\tools\telem_command.py --port COM5`.
-
-### 5. Verify before any START
-
-In the operator panel, **Mission Control** card:
-
-| Check | Where | Expected |
+| | Windows (PowerShell) | Linux |
 |---|---|---|
-| Radio port open | Command radio | not "PORT COM5 NOT OPEN" |
-| Radio link + Jetson running | Command radio | `LINK UP (Jetson heartbeat … s ago)` |
-| Hover mission node running | Mission (radio) / Mission status | `idle` / `idle [real]` |
-| MAVROS ↔ Pixhawk | Vehicle, Connection panel | FCU connected, `disarmed · <mode>` |
-| Telemetry over the radio | other panels | live battery / attitude / position |
-| Indoor position | Position panel / `check_jetson.sh` | `/mavros/local_position/pose` publishing, moves when the drone is carried |
+| Python env | `custom-gcs\gcs\backend\.venv\Scripts\python.exe -m pip install pytest` | `custom-gcs/gcs/backend/.venv/bin/pip install pytest` |
+| Missions | `custom-gcs\gcs\backend\.venv\Scripts\python.exe -m pytest missions -q` | `custom-gcs/gcs/backend/.venv/bin/python -m pytest missions -q` |
+| Jetson code | `cd onboard-autonomy\nidar_autonomy; ..\..\custom-gcs\gcs\backend\.venv\Scripts\python.exe -m pytest test -q` | `cd onboard-autonomy/nidar_autonomy && ../../custom-gcs/gcs/backend/.venv/bin/python -m pytest test -q` |
+| GCS backend | `cd custom-gcs\gcs\backend; .venv\Scripts\python.exe -m pytest -q` | `cd custom-gcs/gcs/backend && .venv/bin/python -m pytest -q` |
+| GCS panel | `cd custom-gcs\gcs\frontend; npx tsc --noEmit; npx vitest run` | same |
 
-### 6. Mission procedure
+## 15. Test status
 
-1. Start the Jetson stack, then the GCS. Wait for the checks above.
-2. **Mission: Hover**.
-3. Press **START**.
-4. Panel shows `Jetson ACCEPTED START (hover)`, or `START not accepted: … REJECTED START: <reason>`.
-5. Mission state goes `setting_guided → arming → taking_off → hovering → landing → complete`, and the Vehicle row shows ARMED / GUIDED / altitude.
-6. **ABORT** at any time: on the ground it disarms; in the air it switches to LAND.
-
-### 7. Motor Test (PROPS OFF)
-
-Checks that every motor runs, in the right order and direction, without
-needing a position estimate. Uses ArduCopter's own motor test
-(`MAV_CMD_DO_MOTOR_TEST`, the same as Mission Planner's Motor Test page):
-it does **not** arm the vehicle the normal way and skips the EKF/position
-checks, but ArduCopter still refuses if the vehicle is armed, the safety
-switch isn't pressed, or the RC isn't calibrated (the reason shows in the
-FCU status text panel).
-
-1. **Remove the props.** Start the Jetson stack **live** (no `--dry-run`) and the GCS.
-2. **Mission: Motor Test**, press **START**.
-3. Motors spin one at a time: **A, B, C, D** (A = front-right on a quad X,
-   then clockwise -- ArduPilot's test order) at **8 %** for **5 s** each,
-   1 s apart. Mission status shows `testing` and which motor.
-   Compare each with ArduPilot's motor diagram for your frame: the right
-   motor position, and the right direction (CW/CCW).
-4. **ABORT** stops the running motor immediately. Every motor command also
-   carries its own 5 s timeout, so ArduCopter stops the motor by itself if
-   the Jetson or radio fails.
-
-Settings: `CONFIG` at the top of `missions/motor_test/mission.py`
-(`motor_count`, `throttle_pct`, `per_motor_s`). The Jetson refuses a START
-for either mission while the other one is running (`MISSION_BUSY`).
-
-### 8. Bench setup: Pixhawk parameters from the GCS
-
-For bench work only -- never in a mission (the operator panel's command
-surface is START and ABORT; this section does not exist unless asked for).
-
-```bash
-~/NidarFiles/scripts/jetson/start_jetson.sh --setup        # Jetson: allow parameter writes
-```
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\gcs\start_gcs.ps1 -Setup   # laptop
-```
-
-A **Pixhawk parameters** section appears under the panels: type a name (or
-click one of the checklist parameters), **Read**, change the value,
-**Write**. The value shown is always read back from the FCU. The Jetson
-refuses writes while the vehicle is armed or a mission runs, or when it was
-not started with `--setup`; the panel shows the reason. Reads always work.
-Every read/write is in `radio_command_node.log`. Some parameters only take
-effect after a Pixhawk reboot.
-
-## Safety
-
-- **This is real hardware.** In live mode a radio START (Hover) arms and flies the vehicle; START (Motor Test) spins the motors -- **props off**.
-- First tests: **props OFF** (dry-run, then live START to watch GUIDED/ARM/TAKEOFF requests on the bench). First flight: props on, **vehicle tethered/netted**, people clear, low altitude (default 0.5 m, 10 s hold).
-- A **safety pilot with an RC transmitter** (mode switch with LAND and a manual mode, plus motor kill) should be ready on every flight. It is the only abort independent of the GCS, radios and Jetson.
-- **ABORT** = LAND in the air, DISARM on the ground before takeoff.
-- **Radio link lost:** no new failsafe was added. The mission still completes its timed hover and lands. ABORT is unavailable until the link returns, so use the RC transmitter.
-- **Jetson/MAVROS failure in flight:** the mission requests LAND if it still can. If the Jetson itself dies, ArduCopter keeps holding position in GUIDED, so the pilot must take over on the RC transmitter.
-- **Pixhawk failsafes** (battery, EKF, RC) remain ArduCopter's. If the FCU switches to LAND itself, the mission follows it and does not override it.
-- Do not run `mission_state_node` with this stack: it would arm on START by itself. `start_jetson.sh` and the hover mission both refuse.
-
-## Troubleshooting
-
-| Symptom | Likely cause / fix |
+| What | Result |
 |---|---|
-| GCS: `PORT COM5 NOT OPEN` | Radio unplugged or different COM port (Device Manager > Ports); restart with `-RadioPort COMx`; close other programs using the port (radio config tool) |
-| GCS: `RADIO LINK DOWN` | Jetson stack not running; Jetson radio missing (`check_jetson.sh`); radios not paired (address/channel/rate must match); wrong baud |
-| `START not accepted … never acknowledged` (504) | Same as RADIO LINK DOWN; or `radio_command_node` not running (see its log) |
-| `REJECTED START: MISSION_NOT_READY` | Hover mission node not running or crashed (`hover_mission.log`) |
-| `REJECTED START: FCU_NOT_CONNECTED` | MAVROS not connected: check `eno1` address, `ping 192.168.144.14`, `mavros.log` |
-| `REJECTED START: MISSION_BUSY` | A hover run is still in progress; wait or ABORT |
-| `REJECTED START: UNKNOWN_MISSION` | GCS and Jetson mission tables differ (`app/missions.py` vs `telem_command_codec.MISSION_NAMES`) |
-| Mission state `failed`: "no fresh local position" | EKF has no indoor position estimate — section B items 1–3 |
-| Mission `failed`: "GUIDED not confirmed" / "ARM failed: …" | ArduCopter refused; the reason (prearm message) is in `hover_mission.log` and the GCS status text |
-| Mission `failed`: "TAKEOFF rejected/not acknowledged" | Check `/mavros/cmd/takeoff` exists; ArduCopter must be armed in GUIDED |
-| `START refused: mission_state_node is running` | Stop `mission_state_node` |
-| Jetson: radio port permission denied | User not in `dialout` (run `setup_jetson.sh`, log out/in) |
-| Jetson: radio garbled / busy | ModemManager probing the port: `sudo systemctl disable --now ModemManager` |
-| Radio by-id path missing | Device name differs: `ls -l /dev/serial/by-id/`, set `NIDAR_RADIO_PORT=...` before `start_jetson.sh` |
-| GCS: LINK UP but FCU not connected / no battery, position | MAVROS not connected (`mavros.log`), or the Pixhawk isn't streaming: check `check_jetson.sh` |
-| GCS: telemetry jumps or ACKs slow | Radio saturated: lower `NIDAR_TELEMETRY_RATE_HZ` (e.g. 1) before `start_jetson.sh` |
-| Local position stale / empty after MAVROS restart | Stream rates reset; the hover node re-requests them on connect — check its log for "stream … NOT confirmed" |
+| Unit tests: missions 56, Jetson 408, GCS backend 180, panel 112 | PASS |
+| Radio protocol vs pymavlink; Jetson ↔ GCS in-memory (commands, telemetry, parameters) | PASS |
+| Radio link on hardware: START/ABORT ACK on 1st try, telemetry live, unplug/replug recovery | **PASS** (2026-10-07) |
+| ARM via radio START; full Hover sequence to `landed and disarmed` (props off) | **PASS** (2026-10-08) |
+| Motor Test mission on the motors | **PASS** (ran; order/direction to confirm) |
+| EKF origin set by the Jetson | **PASS** (`EKF3 IMU0 origin set`) |
+| Hover mission "too high" safety (drone lifted by hand) → LAND → disarm | **PASS** |
+| Setup tab (parameters over the radio) on hardware | NOT TESTED |
+| Flight | NOT TESTED |
 
-## Tests
+## 16. Where we stopped (2026-10-08)
 
-| Level | Status |
-|---|---|
-| Mission decision logic (`missions/`: hover 33, motor test 15) | PASSED — `python -m pytest missions -q` |
-| onboard-autonomy unit tests (385 passed, 4 ROS-only skipped) | PASSED on Windows without ROS — ROS node tests run only on the Jetson |
-| GCS backend (170 passed, 1 skipped: needs Linux sim venv) | PASSED |
-| GCS frontend (98 tests) + typecheck + production build | PASSED |
-| Radio protocol vs pymavlink (byte-for-byte) | PASSED |
-| GCS RadioLink ↔ Jetson codec + gate, in-memory serial | PASSED (software integration) |
-| Radio telemetry: Jetson relay + codec → GCS RadioLink → `/api/telemetry`, in-memory serial | PASSED (software integration) |
-| Backend live smoke test, no radio attached | PASSED: START/ABORT refused with 503, nothing claimed sent |
-| RF link Jetson ↔ laptop (dry-run, 2026-10-07) | **PASSED on hardware**: START/ABORT ACKed on the 1st attempt; telemetry (FCU state, battery, attitude) live over the radio; radio unplug/replug recovered by itself |
-| Jetson nodes on ROS 2 / MAVROS (radio node, hover node) | **PASSED on hardware** (start-up, MAVROS connected, stream rates confirmed) |
-| Motor Test via this code | **NOT TESTED** (not run yet) |
-| ARM via radio START (props off, 2026-10-07) | **PASSED on hardware**: GUIDED → ARM accepted and confirmed; TAKEOFF then refused (no EKF origin) and the hover node crashed while logging it -- both fixed |
-| EKF origin set by the Jetson (2026-10-08) | **PASSED on hardware**: preflight passed with the origin set |
-| GUIDED / TAKEOFF / LAND via this code | **NOT TESTED**: ARM refused (result 4) while the EKF kept dropping optical-flow aiding |
-| End-to-end START → hover | **NOT TESTED** |
-| Flight | **NOT TESTED** |
-
-## B. Hardware-specific items to configure and verify later
-
-These depend on the physical drone and could not be determined from the
-repositories. Nothing here is guessed in the code. Where the code depends on
-one of them, the code is marked `TODO(hardware)`, or the item fails safe if
-not met.
-
-1. **Indoor position source (required before any flight).** ArduCopter will
-   not arm/take off in GUIDED, and the hover mission's preflight refuses,
-   without a fresh `/mavros/local_position/pose`. Identify the installed
-   optical-flow and rangefinder sensors and configure them and EKF3 in
-   ArduCopter. Typical parameter groups: `FLOW_*`, `RNGFND1_*`,
-   `EK3_SRC1_POSXY`/`VELXY`/`POSZ`/`YAW`, `AHRS_EKF_TYPE`, `GPS1_TYPE`,
-   `ARMING_CHECK`. Use each sensor's ArduPilot documentation; values are not
-   assumed here. If indoor flight needs an EKF origin, set it as that setup
-   requires.
-2. **Verify the position estimate on the bench:** `check_jetson.sh` shows
-   local position at ≥10 Hz; carry the drone ~1 m and confirm x/y/z follow;
-   the altitude reads correctly near the floor.
-3. **Hover parameters** (`missions/hover/mission.py` `CONFIG`):
-   `takeoff_altitude_m` (0.5) inside the rangefinder's reliable range and
-   below the net; `max_horizontal_drift_m` (0.75) inside the test area;
-   `min_battery_voltage_v` set for the flight battery (currently `None` =
-   check disabled).
-4. **Battery monitoring:** a power module must report real voltage. At
-   bring-up `/mavros/battery` read 0.0 V.
-5. **Failsafes in ArduCopter:** RC failsafe, battery failsafe, `FS_EKF_ACTION`,
-   `FS_GCS_ENABLE` (no MAVLink GCS is connected to the Pixhawk in this design),
-   `DISARM_DELAY`, `LAND_SPEED`. Decide and set them deliberately.
-6. **RC transmitter / safety pilot:** bind, mode switch (LAND + manual), motor kill.
-7. **Radio device name:** confirm the by-id path on the Jetson. If another
-   CP2102 device (e.g. a LiDAR adapter) produces the same name, use the
-   `/dev/serial/by-path/` name of the radio's USB port (`NIDAR_RADIO_PORT`).
-8. **Radio round-trip time:** measure with the dry-run test; tune retry
-   timings in `custom-gcs/gcs/backend/app/radio_link.py` (`START_*`, `ABORT_*`).
-9. **MAVROS on the Jetson:** confirm `/mavros/set_mode`, `/mavros/cmd/takeoff`,
-   `/mavros/cmd/arming`, `/mavros/set_message_interval` exist
-   (`check_jetson.sh`), and that GUIDED takeoff via `/mavros/cmd/takeoff`
-   climbs to the requested height on this vehicle.
-10. **Telemetry over the radio:** confirm the panels update (battery,
-    attitude, position, FCU messages), and that START/ABORT ACKs stay fast
-    with telemetry running. Lower `NIDAR_TELEMETRY_RATE_HZ` if they don't.
-11. **Persistent network:** `eno1` 192.168.144.1 is still runtime-only
-    (`start_jetson.sh` restores it, using sudo).
-
-### Hardware test sequence (each step only after the previous one passes)
-
-1. **Radio only, props OFF:** `start_jetson.sh --dry-run`. GCS shows LINK UP.
-   START → `Jetson ACCEPTED`, and `radio_command_node.log` shows the
-   command, with nothing published. Unplug the Jetson radio → RADIO LINK DOWN.
-2. **Telemetry:** GCS shows real FCU state, battery, attitude, local position.
-3. **Rejections, props OFF, live mode:** with the Ethernet cable unplugged,
-   START is rejected `FCU_NOT_CONNECTED`. With the hover node stopped,
-   `MISSION_NOT_READY`.
-4. **Command chain, props OFF, live mode — ask for explicit confirmation first:**
-   START → GUIDED → ARM → TAKEOFF request (motors spin up; no props).
-   ABORT → disarm/LAND. Check the mission state and logs at each stage.
-5. **First hover — props ON, tethered/netted, safety pilot ready, explicit go/no-go first:**
-   START → takeoff to 0.5 m → 10 s hold → LAND → disarm. Then repeat with an
-   in-air ABORT.
-
-## Where we stopped (2026-10-08)
-
-**Hardware state**
-- MicoAir **MTF-01** (optical flow + rangefinder) on Pixhawk **TELEM1**,
-  configured through ArduPilot serial passthrough (MicoAssistant):
-  `Mav_APM`, `mav_id 200`. Pixhawk: `SERIAL1_PROTOCOL=1`, `SERIAL1_BAUD=115`,
-  `SERIAL1_OPTIONS=1024`, `FLOW_TYPE=5`, `RNGFND1_TYPE=10`,
-  `RNGFND1_ORIENT=25`, `EK3_SRC1_POSXY=0`, `EK3_SRC1_VELXY=5`,
-  `EK3_SRC1_POSZ=1`, `EK3_SRC1_YAW=1`. Rangefinder reading confirmed live.
-- ModemManager disabled on the Jetson. `eno1` address still runtime-only
-  (`start_jetson.sh` restores it).
-
-**Blocker:** on a live Hover START, ArduCopter refused to ARM (result 4)
-while the status text cycled `EKF3 IMU0 started relative aiding` /
-`stopped aiding` / `fusing optical flow` -- the EKF keeps losing the flow
-sensor, most likely because the drone sits on the floor (sensor too close,
-or floor without texture/light). Local position z also read 1.43 m on the
-ground (baro drift).
-
-**Next steps (props off throughout)**
-1. Get the exact refusal: `grep -E "PreArm|Arm:|EKF|flow" <latest log>/mavros.log`.
-2. In Mission Planner (Jetson stack stopped), Status tab: `opt_qua` and
-   `rangefinder1` on the floor vs held 30-50 cm up, on a textured surface
-   in good light. Read `EK3_FLOW_USE`, `FLOW_ORIENT_YAW`, `FLOW_FXSCALER`,
-   `FLOW_FYSCALER`, `RNGFND1_GNDCLEAR`, `ARMING_CHECK`.
-3. Likely fixes: `RNGFND1_GNDCLEAR` (sensor height when landed), a
-   textured take-off mat, mounting height; then flow calibration
-   (`FLOW_FXSCALER/FYSCALER`, `FLOW_ORIENT_YAW`).
-4. Run the **Motor Test** mission (props off) -- not run yet.
-5. Manual hover in AltHold/Loiter on the RC transmitter to validate the flow.
-6. Only then our Hover mission: tethered, low, safety pilot ready.
-
-**Code workflow:** edit in `D:\NidarFiles`; the GitHub copy is
-`D:\NidarFiles-github` (https://github.com/kp00004/NidarFiles), updated by
-copying the changes there and pushing. On the Jetson: `git pull`, then
-`setup_jetson.sh` when `onboard-autonomy` changed. The `custom-gcs` and
-`onboard-autonomy` folders in `D:\NidarFiles` are also the TeamArdra git
-repos (branch `feature/hover-radio`); none of this work is committed there.
+- Optical flow fixed (`RNGFND1_MAX_CM` was 8 cm); EKF holds a position on a lit, textured surface.
+- Open before Saturday's hover test: compass + accelerometer calibration
+  (Pixhawk still shows `Check mag field` / `mag anomaly`), RC transmitter
+  setup, flow orientation/calibration, failsafes, battery limits back to
+  flight values and a charged battery — the checklist in section 11.
+- Code workflow (maintainers): edit in `D:\NidarFiles`, copy to
+  `D:\NidarFiles-github`, push to https://github.com/kp00004/NidarFiles. The
+  `custom-gcs` / `onboard-autonomy` folders inside `D:\NidarFiles` are also the
+  TeamArdra repos (branch `feature/hover-radio`); this work isn't committed there.

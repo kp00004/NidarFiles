@@ -39,13 +39,20 @@ describe("App", () => {
     const { unmount } = render(<App />);
     await waitFor(() => expect(health).toHaveBeenCalled());
     expect(screen.queryByText("Pixhawk parameters")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
     unmount();
     health.mockResolvedValue({
       connected: true, ros_status: "disabled", telemetry_source: "radio", setup_enabled: true,
       rosbridge_host: "127.0.0.1", rosbridge_port: 9090,
     });
     render(<App />);
+    const setupTab = await screen.findByRole("tab", { name: "Setup: Pixhawk parameters" });
+    expect(screen.queryByText("Pixhawk parameters")).not.toBeInTheDocument();
+    setupTab.click();
     expect(await screen.findByText("Pixhawk parameters")).toBeInTheDocument();
+    expect(screen.getByTestId("mission-panels")).toHaveClass("hidden");
+    screen.getByRole("tab", { name: "Mission" }).click();
+    await waitFor(() => expect(screen.getByTestId("mission-panels")).not.toHaveClass("hidden"));
   });
 
   it("shows a separate GPS panel (GPS missions only) alongside the others", async () => {

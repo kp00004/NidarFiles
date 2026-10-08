@@ -189,7 +189,7 @@ def test_statustext_history_is_bounded():
     client = RadioTelemetryClient(Clock())
     _feed(client, *[statustext(FCU, f"t{i}") for i in range(25)])
     history = client.statustext_history()
-    assert len(history) == 10 and history[-1]["text"] == "t24"
+    assert len(history) == 20 and history[-1]["text"] == "t24"
 
 
 def test_hover_status_built_from_radio():
@@ -213,9 +213,22 @@ def test_hover_status_built_from_radio():
     assert status["execution_mode"] == "real"
 
 
-def test_jetson_detail_does_not_go_into_fcu_statustext():
+def test_mission_steps_appear_in_the_messages_once_per_change():
+    clock = Clock()
+    client = RadioTelemetryClient(clock)
+    _feed(client, jetson_heartbeat(0, mission_code=1), statustext(JETSON, "waiting for START", severity=6))
+    clock.t += 5
+    _feed(client, jetson_heartbeat(0, mission_code=1), statustext(JETSON, "waiting for START", severity=6))  # resend
+    _feed(client, jetson_heartbeat(8, mission_code=1), statustext(JETSON, "operator ABORT -- landing", severity=6))
+    assert client.statustext_history() == [
+        {"severity": 6, "text": "Hover: waiting for START"},
+        {"severity": 4, "text": "Hover: operator ABORT -- landing"},
+    ]
+
+
+def test_param_replies_are_not_mission_messages():
     client = RadioTelemetryClient(Clock())
-    _feed(client, jetson_heartbeat(0), statustext(JETSON, "waiting for START", severity=6))
+    _feed(client, jetson_heartbeat(0, mission_code=2), statustext(JETSON, "PARAM: X: refused", severity=4))
     assert client.statustext_history() == []
 
 

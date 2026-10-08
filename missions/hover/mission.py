@@ -72,10 +72,9 @@ CONFIG = HoverConfig(
 # EKF origin the Jetson gives the Pixhawk (there is no GPS indoors). Any
 # fixed point works for local flight; it also sets the magnetic declination
 # ArduCopter computes (COMPASS_AUTODEC), so roughly the test site is best.
-# TODO(hardware): set to the approximate test site (lat, lon in degrees,
-# alt in metres). Default: the geographic centre of India -- declination
-# differs by only a degree or two across India.
-EKF_ORIGIN = (20.5937, 78.9629, 0.0)
+# Test site: Vellore, Tamil Nadu (lat, lon in degrees, alt in metres MSL).
+# Change if testing far from Vellore.
+EKF_ORIGIN = (12.9165, 79.1325, 216.0)
 
 # A START must follow a /gcs/mission_select naming this mission within this
 # window (radio_command_node publishes both back to back).

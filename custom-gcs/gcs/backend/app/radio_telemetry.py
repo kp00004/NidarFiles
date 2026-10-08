@@ -65,7 +65,7 @@ ATTITUDE_STALE_S = 3.0
 HOVER_VALUES_STALE_S = 3.0
 # The Jetson resends the mission detail every 5 s while there is one.
 MISSION_DETAIL_STALE_S = 12.0
-STATUSTEXT_HISTORY = 10
+STATUSTEXT_HISTORY = 20
 _PARTIAL_TEXT_TIMEOUT_S = 5.0
 
 _NO_PUBLISH = "telemetry comes over the command radio -- there is no ROS link to publish on"
@@ -102,6 +102,10 @@ class TextAssembler:
         return "".join(chunks[i] for i in range(len(chunks)))
 
 
+# How mission lines are labelled in the messages list.
+MISSION_DISPLAY_NAMES = {"hover": "Hover", "motor_test": "Motor Test"}
+_MISSION_WARNING_WORDS = ("fail", "reject", "refused", "abort", "lost", "not ", "landing", "kill")
+
 _JETSON = (JETSON_SYSTEM_ID, JETSON_COMPONENT_ID)
 _FCU = (JETSON_SYSTEM_ID, FCU_RELAY_COMPONENT_ID)
 
@@ -133,6 +137,8 @@ class RadioTelemetryClient:
                 elif kind == "STATUSTEXT":
                     text = self._reassemble(source, msg, now)
                     if text is not None and not text.startswith(PARAM_TEXT_PREFIX):
+                        if text != self._values.get("mission_detail"):
+                            self._add_mission_message(text)
                         self._store("mission_detail", text, now)
             elif source == _FCU:
                 if kind == "HEARTBEAT":
@@ -161,6 +167,17 @@ class RadioTelemetryClient:
                     if text is not None:
                         self._statustext_history.append({"severity": msg.severity, "text": text})
                         del self._statustext_history[:-STATUSTEXT_HISTORY]
+
+    def _add_mission_message(self, text: str) -> None:
+        """A new mission status line also goes into the messages list, so
+        the operator sees each mission step next to the FCU's messages.
+        (The Jetson resends an unchanged line every 5 s; only changes land
+        here.)"""
+        name = MISSION_DISPLAY_NAMES.get(self._mission_id or "", self._mission_id or "Mission")
+        lowered = text.lower()
+        warning = any(w in lowered for w in _MISSION_WARNING_WORDS)
+        self._statustext_history.append({"severity": 4 if warning else 6, "text": f"{name}: {text}"})
+        del self._statustext_history[:-STATUSTEXT_HISTORY]
 
     def _store(self, key: str, value: Any, now: float) -> None:
         self._values[key] = value

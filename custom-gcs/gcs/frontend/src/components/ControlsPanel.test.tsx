@@ -65,7 +65,9 @@ describe("ControlsPanel (Mission Control)", () => {
   it("names the active mission next to its radio state", async () => {
     vi.spyOn(api, "getRadioStatus").mockResolvedValue({ ...RADIO_UP, jetson_mission: "motor_test", jetson_mission_state: "testing" });
     await renderReady();
-    expect(await screen.findByText("motor_test · testing")).toBeInTheDocument();
+    expect(await screen.findByText("testing")).toBeInTheDocument();
+    // once in the Mission dropdown, once in the status line
+    expect(screen.getAllByText("Motor Test")).toHaveLength(2);
   });
 
   it("START sends the selected mission id", async () => {
@@ -149,5 +151,19 @@ describe("ControlsPanel (Mission Control)", () => {
   it("has exactly two buttons -- no confirmation step before ABORT", async () => {
     await renderReady();
     expect(screen.getAllByRole("button")).toHaveLength(2);
+  });
+
+  it("shows one readable status block: link, mission with state badge, detail, vehicle", async () => {
+    vi.spyOn(api, "getRadioStatus").mockResolvedValue({ ...RADIO_UP, jetson_mission: "hover", jetson_mission_state: "aborted" });
+    vi.spyOn(api, "getFlightTestStatus").mockResolvedValue({
+      scenario: "hover", state: "aborted", target_altitude_m: 0.5, current_altitude_m: null,
+      current_position: null, duration_s: 10, elapsed_hover_s: null, armed: false,
+      execution_mode: "real", detail: "landed and disarmed after ABORT", flight_mode: "LAND",
+    });
+    render(<ControlsPanel telemetry={null} />);
+    expect(await screen.findByText("aborted")).toBeInTheDocument();
+    expect(screen.getByText("landed and disarmed after ABORT")).toBeInTheDocument();
+    expect(screen.getByText(/LINK UP · heartbeat 0.4 s ago/)).toBeInTheDocument();
+    expect(screen.getByText("Pixhawk not connected (no FCU telemetry)")).toBeInTheDocument();
   });
 });

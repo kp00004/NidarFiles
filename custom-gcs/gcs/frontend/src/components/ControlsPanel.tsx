@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import Panel, { Row } from "./Panel";
+import type React from "react";
+import Panel from "./Panel";
 import { getFlightTestStatus, getMissions, getRadioStatus, postAbort, postMissionStart } from "../api";
 import type { FlightTestStatusResponse, Mission, RadioStatusResponse, TelemetryResponse } from "../types";
 
@@ -32,6 +33,29 @@ const DEFAULT_WARNING = "REAL HARDWARE. START runs the selected mission on the v
 
 type Outcome = { ok: boolean; text: string } | null;
 
+const RUNNING_STATES = new Set(["preflight", "setting_guided", "arming", "taking_off", "hovering", "landing", "testing"]);
+
+function stateBadgeClass(state: string): string {
+  if (state === "complete") return "bg-ok text-white";
+  if (state === "failed") return "bg-bad text-white";
+  if (state === "aborted" || state === "pilot_override") return "bg-warn text-black";
+  if (RUNNING_STATES.has(state)) return "bg-[#1f6feb] text-white";
+  return "bg-[#2b3a48] text-text"; // idle / unknown
+}
+
+function Badge({ className, children }: { className: string; children: React.ReactNode }) {
+  return <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-bold uppercase ${className}`}>{children}</span>;
+}
+
+function StatusLine({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 px-2.5 py-2 text-sm">
+      <span className="w-20 shrink-0 text-xs text-dim">{label}</span>
+      <div className="min-w-0 flex flex-wrap items-center">{children}</div>
+    </div>
+  );
+}
+
 function radioSummary(radio: RadioStatusResponse | null): { text: string; className: string } {
   if (!radio) return { text: "—", className: "text-dim" };
   if (!radio.enabled) return { text: "RADIO DISABLED", className: "text-bad font-semibold" };
@@ -43,7 +67,7 @@ function radioSummary(radio: RadioStatusResponse | null): { text: string; classN
   }
   if (!radio.jetson_link_up) return { text: "RADIO LINK DOWN — no Jetson heartbeat", className: "text-bad font-semibold" };
   return {
-    text: `LINK UP (Jetson heartbeat ${radio.jetson_heartbeat_age_s ?? "?"} s ago)`,
+    text: `LINK UP · heartbeat ${radio.jetson_heartbeat_age_s ?? "?"} s ago`,
     className: "text-ok font-semibold",
   };
 }
@@ -129,6 +153,15 @@ export default function ControlsPanel({ telemetry }: { telemetry: TelemetryRespo
 
   const link = radioSummary(radio);
   const fcu = telemetry?.fcu;
+  // One mission line: the Jetson's radio heartbeat says which mission and
+  // its state; the relayed status adds the detail text.
+  const missionId = radio?.jetson_link_up ? radio.jetson_mission ?? mission?.scenario ?? null : null;
+  const missionState = radio?.jetson_link_up
+    ? (radio.jetson_mission_state && radio.jetson_mission_state !== "unknown"
+        ? radio.jetson_mission_state
+        : mission?.state ?? null)
+    : null;
+  const missionName = missions?.find((m) => m.id === missionId)?.name ?? missionId ?? "";
 
   return (
     <Panel title="Mission Control">
@@ -177,26 +210,40 @@ export default function ControlsPanel({ telemetry }: { telemetry: TelemetryRespo
         <div className={`mt-2.5 text-xs font-semibold ${abortOutcome.ok ? "text-ok" : "text-bad"}`}>{abortOutcome.text}</div>
       )}
 
-      <div className="mt-3 text-xs">
-        <Row label="Command radio">
+      <div className="mt-3 rounded-md border border-border bg-black/20 divide-y divide-[#1d252d]">
+        <StatusLine label="Radio link">
           <span className={link.className}>{link.text}</span>
-        </Row>
-        <Row label="Mission (radio)">
-          {radio?.jetson_link_up
-            ? `${radio.jetson_mission ? `${radio.jetson_mission} · ` : ""}${radio.jetson_mission_state ?? "—"}`
-            : "—"}
-        </Row>
-        <Row label="Mission status">
-          {mission?.state ? `${mission.state}${mission.execution_mode ? ` [${mission.execution_mode}]` : ""}` : "—"}
-        </Row>
-        {mission?.detail && <div className="mt-1 text-dim">{mission.detail}</div>}
-        <Row label="Vehicle">
-          {fcu?.connected
-            ? `${fcu.armed ? "ARMED" : "disarmed"} · ${fcu.mode ?? "?"}${
-                mission?.current_altitude_m != null ? ` · alt ${mission.current_altitude_m} m` : ""
-              }`
-            : "FCU not connected / no telemetry"}
-        </Row>
+        </StatusLine>
+        <StatusLine label="Mission">
+          {missionState ? (
+            <>
+              <span className="mr-2 text-text">{missionName}</span>
+              <Badge className={stateBadgeClass(missionState)}>{missionState.replace(/_/g, " ")}</Badge>
+            </>
+          ) : (
+            <span className="text-dim">no mission status</span>
+          )}
+        </StatusLine>
+        {mission?.detail && (
+          <div className="px-2.5 py-2 text-sm text-text" aria-label="Mission detail">
+            {mission.detail}
+          </div>
+        )}
+        <StatusLine label="Vehicle">
+          {fcu?.connected ? (
+            <>
+              <Badge className={fcu.armed ? "bg-bad text-white" : "bg-[#2b3a48] text-text"}>
+                {fcu.armed ? "ARMED" : "DISARMED"}
+              </Badge>
+              <span className="ml-2 text-text">{fcu.mode ?? "?"}</span>
+              {mission?.current_altitude_m != null && (
+                <span className="ml-2 text-dim">alt {mission.current_altitude_m} m</span>
+              )}
+            </>
+          ) : (
+            <span className="text-bad font-semibold">Pixhawk not connected (no FCU telemetry)</span>
+          )}
+        </StatusLine>
       </div>
 
       <div className="mt-2.5 px-2.5 py-2 bg-warn/10 border border-warn/40 rounded-md text-warn text-xs font-semibold">

@@ -52,7 +52,7 @@ export default function StatusTextPanel({ telemetry }: { telemetry: TelemetryRes
   const rows = collapse(telemetry?.statustext ?? []);
 
   return (
-    <Panel title="FCU messages (newest first)" className="col-span-full">
+    <Panel title="Messages: Pixhawk and missions (newest first)" className="col-span-full">
       <div className="max-h-56 overflow-y-auto">
         {rows.length === 0 ? (
           <div className="text-dim text-sm">no messages received</div>
