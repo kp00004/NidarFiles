@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useTelemetry } from "./hooks/useTelemetry";
 import ConnectionPanel from "./components/ConnectionPanel";
 import FlightPanel from "./components/FlightPanel";
@@ -5,6 +6,7 @@ import MissionPanel from "./components/MissionPanel";
 import ControlsPanel from "./components/ControlsPanel";
 import BatteryPanel from "./components/BatteryPanel";
 import PositionVelocityPanel from "./components/PositionVelocityPanel";
+import GpsPanel from "./components/GpsPanel";
 import AttitudePanel from "./components/AttitudePanel";
 import StatusTextPanel from "./components/StatusTextPanel";
 import MapPanel from "./components/MapPanel";
@@ -15,8 +17,17 @@ import PerceptionPanel from "./components/PerceptionPanel";
 import SimulationPanel from "./components/SimulationPanel";
 import Footer from "./components/Footer";
 
+// Display tabs. Switching tabs only changes what is shown -- it is not an
+// operator command and sends nothing to the drone.
+const TABS = [
+  { id: "indoor", label: "Indoor mission" },
+  { id: "gps", label: "GPS missions" },
+] as const;
+type TabId = (typeof TABS)[number]["id"];
+
 export default function App() {
   const { data: telemetry, error, lastUpdatedAt } = useTelemetry();
+  const [tab, setTab] = useState<TabId>("indoor");
 
   // The simulation panel is dev/bench-only and gated OFF by default --
   // per custom-gcs/CLAUDE.md Important Constraint #1, the operator
@@ -45,7 +56,29 @@ export default function App() {
         {subtitle}
       </div>
 
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+      <div role="tablist" aria-label="Panel view" className="flex gap-1 mb-3 border-b border-border">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            className={`px-3 py-1.5 text-sm rounded-t-md border border-b-0 ${
+              tab === t.id ? "bg-panel border-border text-text font-semibold" : "border-transparent text-dim hover:text-text"
+            }`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* The Indoor panels stay mounted on the GPS tab (just hidden), so Mission
+          Control keeps its state and polling -- START/ABORT are one click away. */}
+      <div
+        data-testid="indoor-panels"
+        className={tab === "indoor" ? "grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3" : "hidden"}
+      >
         <ConnectionPanel telemetry={telemetry} />
         <FlightPanel telemetry={telemetry} />
         <MissionPanel telemetry={telemetry} />
@@ -60,6 +93,12 @@ export default function App() {
         <MapPanel telemetry={telemetry} />
         <CameraPanel />
       </div>
+
+      {tab === "gps" && (
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
+          <GpsPanel telemetry={telemetry} />
+        </div>
+      )}
 
       {simulationEnabled && (
         <>

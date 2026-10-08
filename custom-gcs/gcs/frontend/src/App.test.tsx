@@ -29,6 +29,20 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("has Indoor and GPS tabs; GPS details live only on the GPS tab", async () => {
+    vi.spyOn(api, "getTelemetry").mockResolvedValue(TELEMETRY);
+    vi.spyOn(api, "getMissions").mockResolvedValue([]);
+    render(<App />);
+    const gpsTab = screen.getByRole("tab", { name: "GPS missions" });
+    expect(screen.getByRole("tab", { name: "Indoor mission" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("Satellites")).not.toBeInTheDocument();
+    gpsTab.click();
+    expect(await screen.findByText("Satellites")).toBeInTheDocument();
+    // indoor panels are kept mounted (Mission Control keeps polling) but not displayed
+    expect(screen.getByTestId("indoor-panels")).toHaveClass("hidden");
+    expect(screen.getByText(/GPS missions only/)).toBeInTheDocument();
+  });
+
   it("renders operator panels and reflects telemetry once loaded", async () => {
     vi.spyOn(api, "getTelemetry").mockResolvedValue(TELEMETRY);
     vi.spyOn(api, "getMap").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
