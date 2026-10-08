@@ -324,11 +324,11 @@ class HoverMission:
             self.state = PILOT_OVERRIDE
             self.detail = f"flight mode changed to {snap.mode} -- mission stopped commanding (pilot has control)"
             return []
-        if snap.ekf_origin_age_s is None or snap.ekf_origin_age_s > c.origin_stale_s:
-            problems.append(
-                "EKF origin not set (the Jetson sets it at startup -- see hover_mission.log; "
-                "ArduCopter refuses a GUIDED takeoff without it)"
-            )
+        # No EKF-origin check here on purpose: the FCU keeps its origin until
+        # it reboots, so a stale origin *report* in flight only means the
+        # 1 Hz GPS_GLOBAL_ORIGIN message stopped -- landing on that would be a
+        # false abort. The origin is required before take-off (preflight); a
+        # real EKF problem in flight shows as stale position, checked next.
         if snap.position is None or snap.position_age_s is None or snap.position_age_s > c.position_stale_s:
             return self._land(now, "local position stale -- landing", FAILED)
         altitude = self._altitude(snap)

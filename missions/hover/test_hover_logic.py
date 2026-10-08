@@ -287,6 +287,25 @@ def test_preflight_refuses_without_ekf_origin_nothing_armed():
         assert m.state == FAILED and "EKF origin not set" in m.detail
 
 
+def test_stale_origin_report_in_flight_does_not_crash_or_abort():
+    """Regression (2026-10-08 review): the airborne watchdog referenced an
+    undefined name when origin reports went stale, which would have raised
+    in flight. Origin is a take-off precondition only."""
+    m = HoverMission(CFG)
+    m.start(0.0, snap(mode=GUIDED))
+    m.on_result(0.1, "arm", True, "ok")
+    m.tick(0.2, at_height(0.0))
+    m.on_result(0.3, "takeoff", True, "ok")
+    m.tick(1.0, at_height(0.45))
+    assert m.state == HOVERING
+    stale = replace(at_height(0.5), ekf_origin_age_s=None)
+    assert m.tick(2.0, stale) == []
+    assert m.state == HOVERING
+    stale = replace(at_height(0.5), ekf_origin_age_s=120.0)
+    assert m.tick(3.0, stale) == []
+    assert m.state == HOVERING
+
+
 def test_preflight_passes_with_fresh_ekf_origin():
     m = HoverMission(CFG)
     assert m.start(0.0, snap(origin_age=1.0)) == [Action("set_mode", GUIDED)]

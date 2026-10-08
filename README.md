@@ -367,6 +367,7 @@ change the magnetic field — calibrate after assembly, never before).
 | 3 | Compass calibration | … → Compass → Start, rotate in every direction away from metal; `Check mag field` gone after reboot |
 | 4 | Arming without RC | if Messages shows an `RC …` PreArm: Mission Planner → `ARMING_CHECK` checkbox list → untick **only "RC Channels"** |
 | 5 | **Optical flow direction** | carry the drone ~1 m **forward**, then **sideways**: Position x/y must change the matching way and stop when you stop; if reversed/swapped set `FLOW_ORIENT_YAW` (e.g. 18000 if mounted rotated 180°) and repeat |
+| 5b | **Altitude check** | note Position **z** with the drone on the floor; lift it (level, still) to **0.5 m** and **1.0 m** above the floor (tape measure) for ~10 s each: z must rise by about that much (±0.15 m) and stay steady. Jumpy or off by > 0.3 m → baro is too noisy indoors: set `EK3_SRC1_POSZ=2` (rangefinder height) and repeat |
 | 6 | Motor Test | Jetson live; section 7.2: order A-B-C-D, A/C counter-clockwise, B/D clockwise |
 | 7 | Flight parameters | `flight_params.py --apply`, reboot the Pixhawk, `flight_params.py` → `ALL OK` (CHECK items fixed in Mission Planner) |
 | 8 | Bench Hover START | Jetson live, props off: GUIDED → ARM → TAKEOFF accepted, then `landed and disarmed (target altitude not reached…)` — expected without props |

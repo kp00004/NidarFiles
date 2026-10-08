@@ -66,7 +66,7 @@ CONFIG = HoverConfig(
     max_altitude_margin_m=0.5,
     max_horizontal_drift_m=0.75,
     position_stale_s=1.0,
-    min_battery_voltage_v=None,
+    min_battery_voltage_v=14.7,  # 4S, at rest before take-off (= BATT_ARM_VOLT)
 )
 
 # EKF origin the Jetson gives the Pixhawk (there is no GPS indoors). Any

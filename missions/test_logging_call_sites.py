@@ -27,3 +27,21 @@ def test_no_logger_method_chosen_at_runtime():
                         if _PATTERN.search(line):
                             offenders.append(f"{path}:{number}: {line.strip()}")
     assert offenders == []
+
+
+def test_no_undefined_names_in_jetson_code():
+    """pyflakes over the mission and Jetson code: an undefined name in a
+    rarely-taken branch (e.g. an in-flight safety check) only fails when
+    that branch runs -- in the air. Found by review 2026-10-08."""
+    import pytest
+
+    api = pytest.importorskip("pyflakes.api")
+    reporter_mod = pytest.importorskip("pyflakes.reporter")
+    import io
+
+    out, err = io.StringIO(), io.StringIO()
+    reporter = reporter_mod.Reporter(out, err)
+    for base in _DIRS:
+        api.checkRecursive([base], reporter)
+    problems = [line for line in out.getvalue().splitlines() if "undefined name" in line]
+    assert problems == [], "\n".join(problems)
