@@ -57,3 +57,7 @@ ros2 service list 2>/dev/null | grep -E "/mavros/(set_mode|cmd/takeoff|cmd/armin
 section "Radio / hover nodes (needs start_jetson.sh running)"
 timeout 3 ros2 topic echo --once /radio/status 2>&1 | head -3
 timeout 3 ros2 topic echo --once /flight_test/status 2>&1 | head -3
+timeout 3 ros2 topic echo --once /motor_test/status 2>&1 | head -3
+
+section "Flight parameters for a no-RC flight (failsafes -> LAND, battery limits, flow/EKF)"
+python3 "$(dirname "${BASH_SOURCE[0]}")/flight_params.py" || true

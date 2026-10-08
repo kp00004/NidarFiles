@@ -8,8 +8,12 @@ import { getParam, setParam } from "../api";
 // refuses writes unless started with --setup, while armed, or while a
 // mission runs. What is shown is always the value read back from the FCU.
 
-// Parameters from the Saturday checklist, for one-click reading.
+// Parameters from the pre-flight checklist (README section 11), for one-click reading.
 const QUICK = [
+  "FS_GCS_ENABLE",
+  "SYSID_MYGCS",
+  "FS_EKF_ACTION",
+  "BATT_FS_LOW_ACT",
   "RNGFND1_MAX_CM",
   "RNGFND1_MIN_CM",
   "RNGFND1_GNDCLEAR",

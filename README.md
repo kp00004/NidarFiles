@@ -4,9 +4,10 @@
 > hardware, props off: radio START/ABORT, telemetry over the radio, ARM via
 > radio START, the full Hover sequence (GUIDED → ARM → TAKEOFF → LAND →
 > disarm), the Motor Test mission, and the EKF origin set by the Jetson.
-> **Not flown yet.** Before the first flight: compass + accelerometer
-> calibration, flow calibration, RC transmitter, failsafes, charged battery
-> — see [11. Pre-flight checklist](#11-pre-flight-checklist-first-hover).
+> **Not flown yet.** Flights are planned **without an RC transmitter**:
+> every failsafe ends in LAND, including the Jetson going silent. Before the
+> first flight: calibrations, flow orientation check, flight parameters,
+> charged battery, tether — see [11. Pre-flight checklist](#11-pre-flight-checklist-first-hover).
 
 New here? Read sections 1–5 in order, then 6–7 each session.
 
@@ -60,10 +61,11 @@ Pixhawk ─▶ MAVROS ─▶ Jetson radio_command_node ─▶ radio ─▶ lapto
 
 ## 3. What you need
 
-**Hardware:** the drone (Pixhawk + Jetson + MTF-01 + radio), the second
-MicroLR900 radio for the laptop, a charged 4S battery, an RC transmitter for
-the safety pilot, a monitor + keyboard for the Jetson, a USB cable for the
-Pixhawk (Mission Planner).
+**Hardware:** the drone (Pixhawk + Jetson + MTF-01 + radio, all mounted),
+the second MicroLR900 radio for the laptop, a charged 4S battery, a monitor
++ keyboard for the Jetson, a USB cable for the Pixhawk (Mission Planner), a
+**tether** (rope to a heavy weight) or net, and a textured, well-lit mat for
+take-off. No RC transmitter is used (see 10. Safety).
 
 **Software on the laptop**
 
@@ -174,7 +176,19 @@ Read-only diagnostics at any time (second terminal):
 ```bash
 ~/NidarFiles/scripts/jetson/check_jetson.sh
 ```
-Look for `OK:` lines: radio port, `dialout`, ModemManager inactive, `eno1` address, Pixhawk ping, MAVROS state, **local position publishing**, **EKF origin set**, battery voltage.
+Look for `OK:` lines: radio port, `dialout`, ModemManager inactive, `eno1` address, Pixhawk ping, MAVROS state, **local position publishing**, **EKF origin set**, battery voltage — and at the end the **flight parameter check** (next).
+
+**Flight parameters** (second terminal, stack running):
+```bash
+~/NidarFiles/scripts/jetson/flight_params.py            # check: OK / FIX / CHECK per parameter
+~/NidarFiles/scripts/jetson/flight_params.py --apply    # set all FIX items (refused while armed), then reboot the Pixhawk
+```
+It checks everything a no-RC flight needs: Jetson silent → LAND
+(`SYSID_MYGCS`, `FS_GCS_ENABLE=5`, `FS_GCS_TIMEOUT=3`), battery/EKF
+failsafes → LAND, flight battery limits (14.7/14.5/14.0 V), `LOG_DISARMED=0`,
+and the optical-flow/EKF setup. **CHECK** items it won't change (e.g.
+`ARMING_CHECK`, sensor settings) — fix those in Mission Planner. It ends with
+`ALL OK` when ready.
 
 ### 5.3 Laptop: start the GCS
 
@@ -325,29 +339,39 @@ stick to `~/` on the Jetson and run `setup_jetson.sh`.
 
 ## 10. Safety
 
-- **Real hardware.** In live mode START (Hover) arms and flies; START (Motor Test) spins the motors. **Props off** unless a flight is planned.
-- First flights: props on, **tethered/netted**, people clear, low (0.5 m).
-- A **safety pilot with an RC transmitter** (mode switch with LAND and a manual mode, motor kill) is ready on every flight — the only abort independent of the laptop, radios and Jetson.
-- **Radio lost in flight:** the mission still finishes its hover and lands; ABORT is unavailable until the link returns — use the RC.
-- **Jetson/MAVROS failure:** the mission requests LAND if it still can; a mission program error makes it land/disarm instead of crashing. If the Jetson dies completely the drone holds position in GUIDED — the pilot takes over on the RC.
-- Pixhawk failsafes (battery, RC, EKF) stay active; the mission follows an FCU-initiated LAND and never overrides it.
+There is **no RC transmitter**, so nobody can take over in the air. The
+only commands are **ABORT (= LAND)** over the radio and, on the ground,
+pulling the battery. That is why:
+
+- **Props off** for everything on the bench. In live mode START (Hover) arms and flies; START (Motor Test) spins the motors.
+- Every flight is **tethered** (short rope to a heavy weight, so it can't climb above ~1 m or drift far) or inside a net. People stay behind the drone and out of reach. One person on the laptop, finger on **ABORT**.
+- **Low and short:** 0.5 m for 10 s. The mission lands by itself if it climbs above 1.0 m, drifts more than 0.75 m, loses position, or can't reach the height in 15 s.
+- **Every failsafe ends in LAND** (set by `flight_params.py --apply`):
+  - **Jetson or MAVROS goes silent** (crash, power, cable) → the Pixhawk lands after 3 s on its own (`FS_GCS_ENABLE=5`, heartbeat from the Jetson's MAVROS = `SYSID_MYGCS`).
+  - Battery low/critical → LAND. Position estimate (EKF) fails → LAND.
+- **Radio lost:** the mission still finishes its hover and lands; ABORT is unavailable until the link returns.
+- **Optical flow orientation must be checked before flying** (section 11). A wrongly oriented flow sensor makes the drone accelerate away instead of holding still — with no RC there is no recovery except the tether.
+- The mission follows any LAND the Pixhawk starts by itself and never overrides it.
 - Don't run `mission_state_node` with this stack (it would arm on START by itself); the scripts refuse.
 
 ## 11. Pre-flight checklist (first hover)
 
-| # | Step | How |
+All with the drone **fully assembled** (Jetson, wiring and battery mounted
+change the magnetic field — calibrate after assembly, never before).
+**Props off until step 10.**
+
+| # | Step | How / pass when |
 |---|---|---|
-| 1 | Accelerometer calibration | Mission Planner → Setup → Mandatory Hardware → Accel Calibration (6 positions) |
-| 2 | Compass calibration | … → Compass → Start, rotate the drone in every direction, away from metal |
-| 3 | RC transmitter | Radio Calibration; mode switch with STABILIZE / ALT_HOLD / LAND; motor kill switch; `FS_THR_ENABLE` (RC loss → LAND) |
-| 4 | Motor Test | section 7.2 — order and direction correct |
-| 5 | Optical flow | `FLOW_ORIENT_YAW` to match the mounting; flow calibration (`FLOW_FXSCALER/FYSCALER`) |
-| 6 | Failsafes | `BATT_FS_LOW_ACT` / `BATT_FS_CRT_ACT` → LAND, `FS_EKF_ACTION` → LAND |
-| 7 | Battery limits back to flight values | `BATT_ARM_VOLT 14.7`, `BATT_LOW_VOLT 14.5`, `BATT_CRT_VOLT 14.0` (bench used 13 / 13.2 / 12.8); battery charged |
-| 8 | `LOG_DISARMED = 0`, `ARMING_CHECK = 1` | Mission Planner or the Setup tab |
-| 9 | Bench Hover START, props off | GUIDED → ARM → TAKEOFF accepted, then `landed and disarmed (target altitude not reached in time -- landing)` — expected without props |
-| 10 | Manual hover on the RC (ALT_HOLD), tethered | drone stable, position estimate sensible |
-| 11 | Hover mission, tethered, safety pilot ready | section 7.1 |
+| 1 | Power-up check | power up **still**, wait 2 min; `start_jetson.sh --dry-run` + GCS: LINK UP, Pixhawk connected, position shown, battery ≥ 15.2 V |
+| 2 | Accelerometer calibration | Mission Planner (USB) → Setup → Mandatory Hardware → Accel Calibration, 6 positions |
+| 3 | Compass calibration | … → Compass → Start, rotate in every direction away from metal; `Check mag field` gone after reboot |
+| 4 | Arming without RC | if Messages shows an `RC …` PreArm: Mission Planner → `ARMING_CHECK` checkbox list → untick **only "RC Channels"** |
+| 5 | **Optical flow direction** | carry the drone ~1 m **forward**, then **sideways**: Position x/y must change the matching way and stop when you stop; if reversed/swapped set `FLOW_ORIENT_YAW` (e.g. 18000 if mounted rotated 180°) and repeat |
+| 6 | Motor Test | Jetson live; section 7.2: order A-B-C-D, A/C counter-clockwise, B/D clockwise |
+| 7 | Flight parameters | `flight_params.py --apply`, reboot the Pixhawk, `flight_params.py` → `ALL OK` (CHECK items fixed in Mission Planner) |
+| 8 | Bench Hover START | Jetson live, props off: GUIDED → ARM → TAKEOFF accepted, then `landed and disarmed (target altitude not reached…)` — expected without props |
+| 9 | **Jetson-loss failsafe test** | props off: Hover START; while `taking_off`, press **Ctrl+C** on the Jetson stack. Within ~3 s the Pixhawk must switch to **LAND** and disarm (watch in Mission Planner over USB). Restart the stack afterwards |
+| 10 | First hover | **props on, tethered**, people clear, take-off mat lit; Jetson live; Hover START, finger on ABORT |
 
 ## 12. Troubleshooting
 
@@ -371,6 +395,9 @@ stick to `~/` on the Jetson and run `setup_jetson.sh`.
 | Jetson: `Permission denied` on a script | `chmod +x ~/NidarFiles/scripts/jetson/*.sh` |
 | Jetson: radio permission denied | not in `dialout`: rerun `setup_jetson.sh`, log out/in |
 | Windows: script "cannot be loaded … disabled on this system" | use `powershell -ExecutionPolicy Bypass -File …` as shown |
+| `PreArm: RC not calibrated` / `RC not found` / `Throttle below failsafe` | no RC in this setup: `ARMING_CHECK` → untick only "RC Channels"; `FS_THR_ENABLE=0` |
+| `flight_params.py`: `UNKNOWN` items | MAVROS hasn't loaded the parameter list yet — wait ~30 s after `MAVROS connected` and run again |
+| Pixhawk didn't LAND when the Jetson stopped (step 9) | `SYSID_MYGCS` must equal MAVROS `system_id` (the script prints it); `FS_GCS_ENABLE=5`; Pixhawk rebooted after setting |
 
 ## 13. Pixhawk configuration
 
@@ -383,8 +410,9 @@ Current settings on this drone (ArduCopter 4.6.3):
 | EKF (no GPS) | `EK3_SRC1_POSXY=0`, `EK3_SRC1_VELXY=5`, `EK3_SRC1_POSZ=1`, `EK3_SRC1_VELZ=0`, `EK3_SRC1_YAW=1`, `EK3_SRC_OPTIONS=0`; origin set by the Jetson |
 | GPS | `GPS1_TYPE=0`, `GPS2_TYPE=0` (no GPS fitted) |
 | Compass | built-in BMM150 (ID 331777) as priority 1, `COMPASS_USE=1` — **needs calibration** |
-| Checks / logging | `ARMING_CHECK=1`; `LOG_DISARMED=1` while bench testing |
-| Battery (bench values) | `BATT_ARM_VOLT=13`, `BATT_LOW_VOLT=13.2`, `BATT_CRT_VOLT=12.8` — restore 14.7 / 14.5 / 14.0 before flight |
+| Checks / logging | `ARMING_CHECK=1` (untick "RC Channels" if no RC complains); `LOG_DISARMED=1` while bench testing → 0 for flight |
+| Battery (bench values) | `BATT_ARM_VOLT=13`, `BATT_LOW_VOLT=13.2`, `BATT_CRT_VOLT=12.8` — flight: 14.7 / 14.5 / 14.0 (`flight_params.py --apply`) |
+| Failsafes for flight (no RC) | `SYSID_MYGCS` = MAVROS system_id (1), `FS_GCS_ENABLE=5`, `FS_GCS_TIMEOUT=3`, `FS_EKF_ACTION=1`, `BATT_FS_LOW_ACT=1`, `BATT_FS_CRT_ACT=1`, `FS_THR_ENABLE=0` — all set by `flight_params.py --apply` |
 
 Network: Jetson `eno1` 192.168.144.1/24 ↔ Pixhawk 192.168.144.14 (MAVLink
 UDP 14550). The Jetson address is set by `start_jetson.sh` each time (not
@@ -420,7 +448,7 @@ Run the tests (laptop, from the repo root; backend venv created by the GCS start
 
 | What | Result |
 |---|---|
-| Unit tests: missions 56, Jetson 408, GCS backend 180, panel 112 | PASS |
+| Unit tests: missions 56, Jetson 415, GCS backend 180, panel 112 | PASS |
 | Radio protocol vs pymavlink; Jetson ↔ GCS in-memory (commands, telemetry, parameters) | PASS |
 | Radio link on hardware: START/ABORT ACK on 1st try, telemetry live, unplug/replug recovery | **PASS** (2026-10-07) |
 | ARM via radio START; full Hover sequence to `landed and disarmed` (props off) | **PASS** (2026-10-08) |
@@ -428,15 +456,17 @@ Run the tests (laptop, from the repo root; backend venv created by the GCS start
 | EKF origin set by the Jetson | **PASS** (`EKF3 IMU0 origin set`) |
 | Hover mission "too high" safety (drone lifted by hand) → LAND → disarm | **PASS** |
 | Setup tab (parameters over the radio) on hardware | NOT TESTED |
+| `flight_params.py` and the Jetson-loss → LAND failsafe on hardware | NOT TESTED (checklist steps 7 and 9) |
 | Flight | NOT TESTED |
 
-## 16. Where we stopped (2026-10-08)
+## 16. Where we stopped (2026-10-08, evening)
 
 - Optical flow fixed (`RNGFND1_MAX_CM` was 8 cm); EKF holds a position on a lit, textured surface.
-- Open before Saturday's hover test: compass + accelerometer calibration
-  (Pixhawk still shows `Check mag field` / `mag anomaly`), RC transmitter
-  setup, flow orientation/calibration, failsafes, battery limits back to
-  flight values and a charged battery — the checklist in section 11.
+- Flights will be **without RC**. Added: the Jetson-loss → LAND failsafe and
+  `scripts/jetson/flight_params.py` (checks/sets every flight parameter).
+- The Jetson was on the bench (cables out → panel said "Pixhawk not
+  connected", expected). **Next session: everything mounted on the drone, then
+  the checklist in section 11 from step 1.**
 - Code workflow (maintainers): edit in `D:\NidarFiles`, copy to
   `D:\NidarFiles-github`, push to https://github.com/kp00004/NidarFiles. The
   `custom-gcs` / `onboard-autonomy` folders inside `D:\NidarFiles` are also the
