@@ -16,6 +16,8 @@
 #
 # Usage:
 #   start_jetson.sh            full stack (a radio START will fly the hover)
+#   start_jetson.sh --setup    also let the GCS Setup page write Pixhawk
+#                              parameters (bench only; refused while armed)
 #   start_jetson.sh --dry-run  radio node ACKs and logs but publishes nothing;
 #                              nothing can arm. Use for the first radio test.
 #
@@ -40,7 +42,14 @@ RADIO_BAUD="${NIDAR_RADIO_BAUD:-115200}"
 TELEMETRY_RATE_HZ="${NIDAR_TELEMETRY_RATE_HZ:-2.0}"
 
 DRY_RUN=false
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=true
+SETUP=false
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=true ;;
+    --setup) SETUP=true ;;
+    *) echo "unknown option: $arg (use --dry-run and/or --setup)"; exit 1 ;;
+  esac
+done
 
 LOG_DIR="$NIDAR_DIR/logs/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
@@ -110,11 +119,14 @@ run command_node ros2 run nidar_autonomy command_node
 run heartbeat_node ros2 run nidar_autonomy heartbeat_node
 run radio_command_node ros2 run nidar_autonomy radio_command_node --ros-args \
   -p "serial_port:=$RADIO_PORT" -p "fallback_serial_port:=$RADIO_FALLBACK_PORT" \
-  -p "baud:=$RADIO_BAUD" -p "dry_run:=$DRY_RUN" -p "telemetry_rate_hz:=$TELEMETRY_RATE_HZ"
+  -p "baud:=$RADIO_BAUD" -p "dry_run:=$DRY_RUN" -p "telemetry_rate_hz:=$TELEMETRY_RATE_HZ"   -p "allow_param_write:=$SETUP"
 run hover_mission python3 "$NIDAR_DIR/missions/hover/mission.py"
 run motor_test_mission python3 "$NIDAR_DIR/missions/motor_test/mission.py"
 
 say "-------------------------------------------------------------------"
+if $SETUP; then
+  say "SETUP: the GCS Setup page may WRITE Pixhawk parameters (refused while armed)."
+fi
 if $DRY_RUN; then
   say "DRY RUN: radio commands are ACKed and logged, nothing is published, nothing can arm."
 else

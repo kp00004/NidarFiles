@@ -23,6 +23,8 @@ export interface HealthResponse {
   // "radio": telemetry over the MicroLR900 radio (no Wi-Fi link);
   // "rosbridge": the Wi-Fi/rosbridge path (development against sim/).
   telemetry_source?: "radio" | "rosbridge";
+  // True only when the backend was started for bench setup (start_gcs.ps1 -Setup).
+  setup_enabled?: boolean;
   rosbridge_host: string;
   rosbridge_port: number;
 }
@@ -348,3 +350,10 @@ export interface SimulationStatusResponse {
 // The simulation control surface is exactly these two -- never
 // "start"/"abort" (that vocabulary stays exclusive to the real command path above).
 export type SimulationCommand = "run" | "reset";
+
+// Bench Setup page: a Pixhawk parameter as read back from the FCU.
+export interface ParamResponse {
+  name: string;
+  value: number;
+  attempts: number;
+}

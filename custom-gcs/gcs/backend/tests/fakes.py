@@ -129,12 +129,34 @@ class FakeRadioLink:
         self.unavailable: str | None = None
         self.started = False
         self.stopped = False
+        self.params: dict[str, float] = {}
+        self.param_calls: list = []
+        self.param_reply = None  # a ParamResult to return instead (refusal / timeout tests)
 
     def start(self) -> None:
         self.started = True
 
     def stop(self) -> None:
         self.stopped = True
+
+    def read_param(self, name: str):
+        from app.radio_link import ParamResult
+
+        if self.unavailable is not None:
+            raise self._unavailable_cls(self.unavailable)
+        self.param_calls.append(("read", name, None))
+        return self.param_reply or ParamResult(name=name, replied=True, value=self.params.get(name, 0.0), attempts=1)
+
+    def set_param(self, name: str, value: float):
+        from app.radio_link import ParamResult
+
+        if self.unavailable is not None:
+            raise self._unavailable_cls(self.unavailable)
+        self.param_calls.append(("set", name, value))
+        if self.param_reply is not None:
+            return self.param_reply
+        self.params[name] = value
+        return ParamResult(name=name, replied=True, value=value, attempts=1)
 
     def send_command(self, command: str, mission_code: int = 0):
         if self.unavailable is not None:

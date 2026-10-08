@@ -258,6 +258,26 @@ Settings: `CONFIG` at the top of `missions/motor_test/mission.py`
 (`motor_count`, `throttle_pct`, `per_motor_s`). The Jetson refuses a START
 for either mission while the other one is running (`MISSION_BUSY`).
 
+### 8. Bench setup: Pixhawk parameters from the GCS
+
+For bench work only -- never in a mission (the operator panel's command
+surface is START and ABORT; this section does not exist unless asked for).
+
+```bash
+~/NidarFiles/scripts/jetson/start_jetson.sh --setup        # Jetson: allow parameter writes
+```
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\gcs\start_gcs.ps1 -Setup   # laptop
+```
+
+A **Pixhawk parameters** section appears under the panels: type a name (or
+click one of the checklist parameters), **Read**, change the value,
+**Write**. The value shown is always read back from the FCU. The Jetson
+refuses writes while the vehicle is armed or a mission runs, or when it was
+not started with `--setup`; the panel shows the reason. Reads always work.
+Every read/write is in `radio_command_node.log`. Some parameters only take
+effect after a Pixhawk reboot.
+
 ## Safety
 
 - **This is real hardware.** In live mode a radio START (Hover) arms and flies the vehicle; START (Motor Test) spins the motors -- **props off**.

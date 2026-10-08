@@ -58,6 +58,11 @@ class Settings:
     # there is no Wi-Fi link on the drone. "rosbridge": the old Wi-Fi path
     # (app/ros_client.py), still used with sim/rosbridge_sim for development.
     telemetry_source: str = os.environ.get("GCS_TELEMETRY_SOURCE", "radio").strip().lower()
+    # Bench Setup page (read/write Pixhawk parameters over the radio). OFF by
+    # default: the operator command surface in a mission is exactly START
+    # and ABORT (CLAUDE.md Important Constraint 1), so the setup routes are
+    # not even created unless this is set (start_gcs.ps1 -Setup).
+    setup_enabled: bool = _env_bool("GCS_SETUP_ENABLED", False)
 
     def __post_init__(self) -> None:
         if self.telemetry_source not in TELEMETRY_SOURCES:

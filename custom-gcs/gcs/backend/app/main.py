@@ -47,6 +47,7 @@ imports mavros_msgs/flight_command.py at all).
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -113,6 +114,8 @@ from .schemas import (
     PathResponse,
     PerceptionDetectionsResponse,
     PerceptionStatusResponse,
+    ParamResponse,
+    ParamWriteRequest,
     PoseResponse,
     PositionResponse,
     RadioCommandResponse,
@@ -127,6 +130,7 @@ from .schemas import (
 )
 
 _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+_PARAM_NAME = re.compile(r"^[A-Z0-9_]{1,16}$")
 
 
 def _mission_to_response(mission: MissionDefinition) -> MissionResponse:
@@ -237,6 +241,7 @@ def create_app(
             connected=ros_client.is_connected,
             ros_status=ros_status(),
             telemetry_source=settings.telemetry_source,
+            setup_enabled=settings.setup_enabled,
             rosbridge_host=settings.rosbridge_host,
             rosbridge_port=settings.rosbridge_port,
         )
@@ -482,6 +487,48 @@ def create_app(
     @app.get("/api/radio/status", response_model=RadioStatusResponse, tags=["command"])
     def radio_status() -> RadioStatusResponse:
         return RadioStatusResponse(**radio.status())
+
+    # -- Bench Setup page (GCS_SETUP_ENABLED only) ----------------------------
+    #
+    # Read/write Pixhawk parameters over the radio, through the Jetson.
+    # Deliberately NOT part of the operator command surface: these routes
+    # do not exist unless the backend was started for bench setup, and the
+    # Jetson itself refuses writes unless started with --setup, while the
+    # vehicle is armed, or while a mission runs.
+
+    if settings.setup_enabled:
+
+        def check_param_name(name: str) -> str:
+            if not _PARAM_NAME.match(name):
+                raise HTTPException(status_code=422, detail=f"invalid parameter name {name!r}")
+            return name
+
+        def param_reply(result, action: str) -> ParamResponse:
+            if not result.replied:
+                raise HTTPException(
+                    status_code=504,
+                    detail=f"{action} {result.name}: no reply from the Jetson after "
+                    f"{result.attempts} radio attempts",
+                )
+            if result.error is not None or result.value is None:
+                raise HTTPException(status_code=409, detail=f"{action} {result.name} refused: {result.error}")
+            return ParamResponse(name=result.name, value=result.value, attempts=result.attempts)
+
+        @app.get("/api/setup/param/{name}", response_model=ParamResponse, tags=["setup"])
+        def read_param(name: str) -> ParamResponse:
+            check_param_name(name)
+            try:
+                return param_reply(radio.read_param(name), "read")
+            except RadioUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        @app.post("/api/setup/param", response_model=ParamResponse, tags=["setup"])
+        def write_param(body: ParamWriteRequest) -> ParamResponse:
+            check_param_name(body.name)
+            try:
+                return param_reply(radio.set_param(body.name, body.value), "write")
+            except RadioUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     # -- Missions -------------------------------------------------------------
     #

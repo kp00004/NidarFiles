@@ -175,7 +175,7 @@ class TelemetryRelay:
             chunks = statustext_chunks(text)
             text_id = 0
             if len(chunks) > 1:
-                self._text_id = self._text_id % 0xFFFF + 1
+                self._text_id = self._text_id % 0x7FFF + 1  # 0x8000+ is for parameter replies
                 text_id = self._text_id
             for chunk_seq, chunk in enumerate(chunks):
                 self._pending_chunks.append((severity, chunk, text_id, chunk_seq, compid))

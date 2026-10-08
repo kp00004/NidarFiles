@@ -331,3 +331,24 @@ low because START/ABORT ACKs share the radio's air time
 Not available without Wi-Fi: live video (MJPEG, §2.3), the map/coverage/
 path topics and perception -- the radio is too slow for them. None of
 these are used by the hover mission.
+
+### 6.2 Bench parameter access (Setup page; not a mission interface)
+
+Added 2026-10-08. Only when the GCS backend runs with `GCS_SETUP_ENABLED`
+(`start_gcs.ps1 -Setup`) -- otherwise the routes `/api/setup/param*` do
+not exist -- and, for writes, only when the Jetson's `radio_command_node`
+runs with `allow_param_write` (`start_jetson.sh --setup`).
+
+| Message | Direction | Content |
+|---|---|---|
+| `PARAM_REQUEST_READ` | GCS → Jetson 1/191 | by name (`param_index` = -1) |
+| `PARAM_SET` | GCS → Jetson 1/191 | name, value |
+| `PARAM_VALUE` | Jetson → GCS | the value now on the FCU (read back via MAVROS after a write) |
+| `STATUSTEXT` `"PARAM: <NAME>: <reason>"` | Jetson → GCS | refusal; never shown as mission detail |
+
+The Jetson reads/writes through MAVROS (`/mavros/param` get/set_parameters)
+and refuses writes while armed (or armed state unknown), while any mission
+is mid-run, for non-ArduPilot names, non-finite values, or non-whole values
+for integer parameters. Chunked refusal texts use STATUSTEXT ids 0x8000+;
+the telemetry relay uses 1..0x7FFF.
+

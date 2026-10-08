@@ -7,6 +7,9 @@ Then opens the operator panel at http://127.0.0.1:8000/ui/
 Usage:
     .\scripts\gcs\start_gcs.ps1
     .\scripts\gcs\start_gcs.ps1 -RadioPort COM7
+    .\scripts\gcs\start_gcs.ps1 -Setup      # bench only: adds the Pixhawk
+                                             # parameter Setup section
+                                             # (the Jetson needs --setup to write)
 
 First run creates gcs\backend\.venv and installs the backend requirements.
 The frontend is (re)built when gcs\frontend\dist is missing or older than
@@ -14,7 +17,8 @@ its sources (needs Node.js).
 #>
 param(
     [string]$RadioPort = "COM5",
-    [int]$RadioBaud = 115200
+    [int]$RadioBaud = 115200,
+    [switch]$Setup
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,6 +67,10 @@ $env:GCS_ROS_ENABLED = "false"
 $env:GCS_RADIO_PORT = $RadioPort
 $env:GCS_RADIO_BAUD = "$RadioBaud"
 $env:GCS_RADIO_ENABLED = "true"
+$env:GCS_SETUP_ENABLED = if ($Setup) { "true" } else { "false" }
+if ($Setup) {
+    Write-Warning "BENCH SETUP MODE: the panel can read/write Pixhawk parameters. Do not use this mode for a mission."
+}
 
 Write-Host "Starting GCS: radio $RadioPort @ $RadioBaud (commands + telemetry)"
 Start-Process "http://127.0.0.1:8000/ui/"

@@ -42,6 +42,7 @@ from .radio_protocol import (
     MAV_MODE_FLAG_SAFETY_ARMED,
     MISSION_NAMES_BY_CODE,
     MISSION_STATE_NAMES,
+    PARAM_TEXT_PREFIX,
     STATUSTEXT_CHUNK_LEN,
 )
 from .ros_client import (
@@ -74,6 +75,33 @@ def _rounded(values: dict, digits: int) -> dict:
     return {k: round(v, digits) for k, v in values.items()}
 
 
+class TextAssembler:
+    """MAVLink2 STATUSTEXT chunking: id 0 is a whole text; otherwise chunks
+    share an id and the one shorter than 50 chars is the last. add()
+    returns the full text once complete, else None. Not thread-safe: the
+    caller holds its own lock."""
+
+    def __init__(self) -> None:
+        self._partial: dict[tuple, dict] = {}
+
+    def add(self, source: tuple, msg, now: float) -> Optional[str]:
+        text_id = getattr(msg, "id", 0) or 0
+        if text_id == 0:
+            return msg.text
+        for key in [k for k, p in self._partial.items() if now - p["at"] > _PARTIAL_TEXT_TIMEOUT_S]:
+            del self._partial[key]
+        key = (source, text_id)
+        partial = self._partial.setdefault(key, {"at": now, "chunks": {}})
+        partial["chunks"][msg.chunk_seq] = msg.text
+        if len(msg.text) >= STATUSTEXT_CHUNK_LEN:
+            return None
+        del self._partial[key]
+        chunks = partial["chunks"]
+        if sorted(chunks) != list(range(len(chunks))):
+            return None  # a chunk was lost
+        return "".join(chunks[i] for i in range(len(chunks)))
+
+
 _JETSON = (JETSON_SYSTEM_ID, JETSON_COMPONENT_ID)
 _FCU = (JETSON_SYSTEM_ID, FCU_RELAY_COMPONENT_ID)
 
@@ -86,7 +114,7 @@ class RadioTelemetryClient:
         self._at: dict[str, float] = {}
         self._hover: dict[str, tuple[float, float]] = {}  # field -> (value, received at)
         self._statustext_history: list[dict] = []
-        self._partial_texts: dict[tuple, dict] = {}
+        self._texts = TextAssembler()
         self._mission_id: Optional[str] = None  # from the Jetson heartbeat
 
     # -- input (RadioLink reader thread) -------------------------------------------
@@ -104,7 +132,7 @@ class RadioTelemetryClient:
                     self._hover[HOVER_VALUE_KEYS[msg.name]] = (round(msg.value, 2), now)
                 elif kind == "STATUSTEXT":
                     text = self._reassemble(source, msg, now)
-                    if text is not None:
+                    if text is not None and not text.startswith(PARAM_TEXT_PREFIX):
                         self._store("mission_detail", text, now)
             elif source == _FCU:
                 if kind == "HEARTBEAT":
@@ -139,24 +167,7 @@ class RadioTelemetryClient:
         self._at[key] = now
 
     def _reassemble(self, source: tuple, msg, now: float) -> Optional[str]:
-        """MAVLink2 STATUSTEXT chunking: id 0 is a whole text; otherwise
-        chunks share an id and the one shorter than 50 chars is the last.
-        Returns the full text once complete, or None."""
-        text_id = getattr(msg, "id", 0) or 0
-        if text_id == 0:
-            return msg.text
-        for key in [k for k, p in self._partial_texts.items() if now - p["at"] > _PARTIAL_TEXT_TIMEOUT_S]:
-            del self._partial_texts[key]
-        key = (source, text_id)
-        partial = self._partial_texts.setdefault(key, {"at": now, "chunks": {}})
-        partial["chunks"][msg.chunk_seq] = msg.text
-        if len(msg.text) >= STATUSTEXT_CHUNK_LEN:
-            return None
-        del self._partial_texts[key]
-        chunks = partial["chunks"]
-        if sorted(chunks) != list(range(len(chunks))):
-            return None  # a chunk was lost
-        return "".join(chunks[i] for i in range(len(chunks)))
+        return self._texts.add(source, msg, now)
 
     # -- ros_client interface ----------------------------------------------------
 

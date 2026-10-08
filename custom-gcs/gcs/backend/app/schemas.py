@@ -25,6 +25,9 @@ class HealthResponse(BaseModel):
     # `connected` = Jetson heartbeats arriving; ros_status is then
     # "disabled". "rosbridge": the Wi-Fi path, as described above.
     telemetry_source: str = "rosbridge"
+    # True only when started for bench setup (GCS_SETUP_ENABLED): the
+    # frontend then shows the Setup section.
+    setup_enabled: bool = False
     rosbridge_host: str
     rosbridge_port: int
 
@@ -417,3 +420,16 @@ class SimulationStatusResponse(BaseModel):
     map_known_pct: float = 0.0
     coverage_search_pct: float = 0.0
     error: str | None = None
+
+
+class ParamWriteRequest(BaseModel):
+    """Bench Setup page only (GCS_SETUP_ENABLED)."""
+
+    name: str
+    value: float
+
+
+class ParamResponse(BaseModel):
+    name: str
+    value: float
+    attempts: int

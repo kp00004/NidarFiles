@@ -29,18 +29,32 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("has Indoor and GPS tabs; GPS details live only on the GPS tab", async () => {
+  it("shows the bench Setup section only when the backend enables it", async () => {
+    vi.spyOn(api, "getTelemetry").mockResolvedValue(TELEMETRY);
+    vi.spyOn(api, "getMissions").mockResolvedValue([]);
+    const health = vi.spyOn(api, "getHealth").mockResolvedValue({
+      connected: true, ros_status: "disabled", telemetry_source: "radio", setup_enabled: false,
+      rosbridge_host: "127.0.0.1", rosbridge_port: 9090,
+    });
+    const { unmount } = render(<App />);
+    await waitFor(() => expect(health).toHaveBeenCalled());
+    expect(screen.queryByText("Pixhawk parameters")).not.toBeInTheDocument();
+    unmount();
+    health.mockResolvedValue({
+      connected: true, ros_status: "disabled", telemetry_source: "radio", setup_enabled: true,
+      rosbridge_host: "127.0.0.1", rosbridge_port: 9090,
+    });
+    render(<App />);
+    expect(await screen.findByText("Pixhawk parameters")).toBeInTheDocument();
+  });
+
+  it("shows a separate GPS panel (GPS missions only) alongside the others", async () => {
     vi.spyOn(api, "getTelemetry").mockResolvedValue(TELEMETRY);
     vi.spyOn(api, "getMissions").mockResolvedValue([]);
     render(<App />);
-    const gpsTab = screen.getByRole("tab", { name: "GPS missions" });
-    expect(screen.getByRole("tab", { name: "Indoor mission" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByText("Satellites")).not.toBeInTheDocument();
-    gpsTab.click();
-    expect(await screen.findByText("Satellites")).toBeInTheDocument();
-    // indoor panels are kept mounted (Mission Control keeps polling) but not displayed
-    expect(screen.getByTestId("indoor-panels")).toHaveClass("hidden");
-    expect(screen.getByText(/GPS missions only/)).toBeInTheDocument();
+    expect(await screen.findByText(/GPS \(GPS missions only\)/)).toBeInTheDocument();
+    expect(screen.getByText("Satellites")).toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
   });
 
   it("renders operator panels and reflects telemetry once loaded", async () => {

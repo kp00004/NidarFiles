@@ -46,6 +46,14 @@ path). Sent by the Jetson, see radio_telemetry.py:
     ATTITUDE_QUATERNION  q1..q4 = w x y z
     STATUSTEXT           FCU status text (/mavros/statustext/recv)
 
+Bench setup (only when radio_command_node runs with allow_param_write,
+`start_jetson.sh --setup`; see param_bridge_logic.py): the GCS reads and
+writes Pixhawk parameters through the Jetson, which uses MAVROS.
+
+  GCS -> 1/191  PARAM_REQUEST_READ (by name), PARAM_SET
+  1/191 -> GCS  PARAM_VALUE (the value now on the FCU, after a set too),
+                STATUSTEXT "PARAM: <reason>" when a request is refused
+
 Position, velocity and attitude are sent in the ROS frame MAVROS
 publishes them in (ENU world, FLU body), NOT converted to NED: both ends
 of this link are ours and the GCS shows exactly the ROS values.
@@ -65,6 +73,9 @@ MSG_ID_HEARTBEAT = 0
 MSG_ID_SYS_STATUS = 1
 MSG_ID_ATTITUDE_QUATERNION = 31
 MSG_ID_LOCAL_POSITION_NED = 32
+MSG_ID_PARAM_REQUEST_READ = 20
+MSG_ID_PARAM_VALUE = 22
+MSG_ID_PARAM_SET = 23
 MSG_ID_COMMAND_LONG = 76
 MSG_ID_COMMAND_ACK = 77
 MSG_ID_NAMED_VALUE_FLOAT = 251
@@ -74,6 +85,9 @@ CRC_EXTRA = {
     MSG_ID_SYS_STATUS: 124,
     MSG_ID_ATTITUDE_QUATERNION: 246,
     MSG_ID_LOCAL_POSITION_NED: 185,
+    MSG_ID_PARAM_REQUEST_READ: 214,
+    MSG_ID_PARAM_VALUE: 220,
+    MSG_ID_PARAM_SET: 168,
     MSG_ID_COMMAND_LONG: 152,
     MSG_ID_COMMAND_ACK: 143,
     MSG_ID_NAMED_VALUE_FLOAT: 170,
@@ -94,6 +108,13 @@ MAV_MODE_FLAG_CUSTOM_MODE_ENABLED = 1
 MAV_MODE_FLAG_GUIDED_ENABLED = 8
 MAV_MODE_FLAG_SAFETY_ARMED = 128
 MAV_SEVERITY_INFO = 6
+MAV_SEVERITY_WARNING = 4
+MAV_PARAM_TYPE_INT32 = 6
+MAV_PARAM_TYPE_REAL32 = 9
+PARAM_ID_LEN = 16
+# STATUSTEXT prefix for parameter replies, so the GCS never mistakes them
+# for the mission's detail line.
+PARAM_TEXT_PREFIX = "PARAM: "
 
 MAVLINK1_MAGIC = 0xFE
 MAVLINK2_MAGIC = 0xFD
@@ -186,6 +207,9 @@ _LOCAL_POSITION_FMT = "<I6f"  # time_boot_ms, x, y, z, vx, vy, vz
 _ATTITUDE_QUATERNION_FMT = "<I7f"  # time_boot_ms, q1..q4, rollspeed, pitchspeed, yawspeed
 _NAMED_VALUE_FLOAT_FMT = "<If10s"  # time_boot_ms, value, name
 _STATUSTEXT_FMT = "<B50sHB"  # severity, text, id, chunk_seq
+_PARAM_REQUEST_READ_FMT = "<hBB16s"  # param_index, target_system, target_component, param_id
+_PARAM_SET_FMT = "<fBB16sB"  # param_value, target_system, target_component, param_id, param_type
+_PARAM_VALUE_FMT = "<fHH16sB"  # param_value, param_count, param_index, param_id, param_type
 
 _MAX_BUFFER = 4096
 
@@ -550,3 +574,76 @@ def encode_statustext(
         _STATUSTEXT_FMT, severity & 0xFF, chunk[:STATUSTEXT_CHUNK_LEN], text_id & 0xFFFF, chunk_seq & 0xFF
     )
     return encode_frame(MSG_ID_STATUSTEXT, payload, seq, sysid, compid)
+
+
+# -- bench parameter access (GCS <-> Jetson) --------------------------------------
+
+
+@dataclass(frozen=True)
+class ParamRequest:
+    kind: str  # "read" or "set"
+    name: str
+    value: Optional[float]  # set only
+    target_system: int
+    target_component: int
+
+
+def _unpad(payload: bytes, fmt: str) -> tuple:
+    size = struct.calcsize(fmt)
+    return struct.unpack(fmt, payload[:size].ljust(size, b"\x00"))
+
+
+def _param_name(raw: bytes) -> str:
+    return raw.split(b"\x00", 1)[0].decode("ascii", errors="replace")
+
+
+def decode_param_request(frame: Frame) -> Optional[ParamRequest]:
+    """PARAM_REQUEST_READ (by name only) or PARAM_SET, else None."""
+    if frame.msgid == MSG_ID_PARAM_REQUEST_READ:
+        index, target_system, target_component, raw_id = _unpad(frame.payload, _PARAM_REQUEST_READ_FMT)
+        name = _param_name(raw_id)
+        if index != -1 or not name:
+            return None  # reads by index are not supported
+        return ParamRequest("read", name, None, target_system, target_component)
+    if frame.msgid == MSG_ID_PARAM_SET:
+        value, target_system, target_component, raw_id, _ = _unpad(frame.payload, _PARAM_SET_FMT)
+        return ParamRequest("set", _param_name(raw_id), value, target_system, target_component)
+    return None
+
+
+def encode_param_value(
+    name: str,
+    value: float,
+    is_integer: bool,
+    seq: int,
+    sysid: int = JETSON_SYSTEM_ID,
+    compid: int = JETSON_COMPONENT_ID,
+) -> bytes:
+    """The value now on the FCU. param_count/index are not meaningful for
+    this by-name bridge and are sent as 1/65535."""
+    payload = struct.pack(
+        _PARAM_VALUE_FMT,
+        float(value),
+        1,
+        0xFFFF,
+        name.encode("ascii")[:PARAM_ID_LEN],
+        MAV_PARAM_TYPE_INT32 if is_integer else MAV_PARAM_TYPE_REAL32,
+    )
+    return encode_frame(MSG_ID_PARAM_VALUE, payload, seq, sysid, compid)
+
+
+def encode_param_request_read(name: str, seq: int, sysid: int = GCS_SYSTEM_ID, compid: int = GCS_COMPONENT_ID) -> bytes:
+    """GCS side; used by tests and tools."""
+    payload = struct.pack(
+        _PARAM_REQUEST_READ_FMT, -1, JETSON_SYSTEM_ID, JETSON_COMPONENT_ID, name.encode("ascii")[:PARAM_ID_LEN]
+    )
+    return encode_frame(MSG_ID_PARAM_REQUEST_READ, payload, seq, sysid, compid)
+
+
+def encode_param_set(name: str, value: float, seq: int, sysid: int = GCS_SYSTEM_ID, compid: int = GCS_COMPONENT_ID) -> bytes:
+    """GCS side; used by tests and tools."""
+    payload = struct.pack(
+        _PARAM_SET_FMT, float(value), JETSON_SYSTEM_ID, JETSON_COMPONENT_ID,
+        name.encode("ascii")[:PARAM_ID_LEN], MAV_PARAM_TYPE_REAL32,
+    )
+    return encode_frame(MSG_ID_PARAM_SET, payload, seq, sysid, compid)

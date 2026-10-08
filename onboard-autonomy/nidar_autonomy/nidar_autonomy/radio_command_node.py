@@ -25,6 +25,9 @@ Parameters:
   dry_run              true = log and ACK, but publish nothing (radio bench test)
   telemetry_rate_hz    position/attitude rate over the radio (default 2.0);
                        0 disables telemetry (commands and heartbeat only)
+  allow_param_write    true = the GCS Setup page may WRITE Pixhawk parameters
+                       (bench only, `start_jetson.sh --setup`; refused while
+                       armed or a mission runs). Reads are always answered.
 """
 
 from __future__ import annotations
@@ -38,11 +41,14 @@ from typing import Optional
 import rclpy
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from mavros_msgs.msg import State, StatusText
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import BatteryState, Imu
 from std_msgs.msg import String
 
+from .param_bridge_logic import addressed_to_jetson, refusal, typed_value
 from .radio_command_logic import CommandGate, Decision, Readiness
 from .radio_telemetry import DEFAULT_RATE_HZ, TelemetryRelay
 from .telem_command_codec import (
@@ -51,13 +57,21 @@ from .telem_command_codec import (
     MISSION_CODES,
     MISSION_STATE_CODES,
     MISSION_STATE_UNKNOWN,
+    MAV_SEVERITY_WARNING,
     MSG_ID_COMMAND_LONG,
+    MSG_ID_PARAM_REQUEST_READ,
+    MSG_ID_PARAM_SET,
+    PARAM_TEXT_PREFIX,
     REASON_NAMES,
     MavlinkStreamParser,
     decode_command_long,
+    decode_param_request,
     encode_command_ack,
     encode_heartbeat,
+    encode_param_value,
+    encode_statustext,
     parse_radio_command,
+    statustext_chunks,
 )
 from .topics import (
     BATTERY_TOPIC,
@@ -88,6 +102,9 @@ MISSION_STATUS_TOPICS = {
     "motor_test": MOTOR_TEST_STATUS_TOPIC,
 }
 
+# MAVROS mirrors every FCU parameter as a ROS parameter of this node.
+MAVROS_PARAM_NODE = "/mavros/param"
+
 _FCU_STATE_STALE_S = 3.0
 _MISSION_STATUS_STALE_S = 3.0
 _REOPEN_INTERVAL_S = 2.0
@@ -109,6 +126,8 @@ class RadioCommandNode(Node):
         self._telemetry_rate_hz = float(
             self.declare_parameter("telemetry_rate_hz", DEFAULT_RATE_HZ).value
         )
+        self._allow_param_write = bool(self.declare_parameter("allow_param_write", False).value)
+        self._param_text_id = 0
 
         self._gate = CommandGate()
         self._parser = MavlinkStreamParser()
@@ -119,6 +138,7 @@ class RadioCommandNode(Node):
         self._stop = threading.Event()
 
         self._fcu_connected = False
+        self._fcu_armed: Optional[bool] = None
         self._fcu_state_at: Optional[float] = None
         # mission id -> (state, monotonic time of its last status)
         self._missions: dict = {}
@@ -132,6 +152,8 @@ class RadioCommandNode(Node):
         self._command_pub = self.create_publisher(String, COMMAND_TOPIC, 10)
         self._select_pub = self.create_publisher(String, MISSION_SELECT_TOPIC, 10)
         self._status_pub = self.create_publisher(String, RADIO_STATUS_TOPIC, 10)
+        self._param_get = self.create_client(GetParameters, f"{MAVROS_PARAM_NODE}/get_parameters")
+        self._param_set = self.create_client(SetParameters, f"{MAVROS_PARAM_NODE}/set_parameters")
 
         best_effort = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, depth=10)
         self.create_subscription(State, FCU_STATE_TOPIC, self._on_fcu_state, best_effort)
@@ -157,12 +179,14 @@ class RadioCommandNode(Node):
             f"{JETSON_SYSTEM_ID}/{JETSON_COMPONENT_ID}"
             + f", telemetry {self._telemetry_rate_hz} Hz"
             + (" -- DRY RUN: commands are ACKed but NOT published" if self._dry_run else "")
+            + (" -- SETUP: Pixhawk parameter WRITES allowed (disarmed only)" if self._allow_param_write else "")
         )
 
     # -- ROS inputs -------------------------------------------------------------
 
     def _on_fcu_state(self, msg: State) -> None:
         self._fcu_connected = bool(msg.connected)
+        self._fcu_armed = bool(msg.armed)
         self._fcu_state_at = time.monotonic()
         self._telemetry.update_fcu_state(
             self._fcu_state_at, msg.connected, msg.armed, msg.guided, msg.mode, msg.system_status
@@ -263,6 +287,8 @@ class RadioCommandNode(Node):
                 self._last_rx_at = time.monotonic()
                 if frame.msgid == MSG_ID_COMMAND_LONG:
                     self._on_command_long(frame)
+                elif frame.msgid in (MSG_ID_PARAM_REQUEST_READ, MSG_ID_PARAM_SET):
+                    self._on_param_request(frame)
 
     def _write(self, frame: bytes) -> None:
         with self._serial_lock:
@@ -316,6 +342,112 @@ class RadioCommandNode(Node):
                 "time": _now(),
             }
 
+    # -- bench parameter access (GCS Setup page) -------------------------------
+
+    def _on_param_request(self, frame) -> None:
+        req = decode_param_request(frame)
+        if req is None or not addressed_to_jetson(req):
+            return
+        readiness = self._readiness()
+        reason = refusal(
+            req,
+            self._allow_param_write,
+            readiness.fcu_connected,
+            self._fcu_armed if readiness.fcu_connected else None,
+            readiness.missions,
+        )
+        what = f"param {req.kind} {req.name}" + ("" if req.value is None else f" = {req.value:g}")
+        if reason:
+            self.get_logger().warning(f"[{_now()}] radio {what} REFUSED: {reason}")
+            self._param_reply_error(req.name, reason)
+            return
+        self.get_logger().warning(f"[{_now()}] radio {what}")
+        self._param_fetch(req.name, lambda value, is_int: self._param_after_get(req, value, is_int))
+
+    def _param_after_get(self, req, value: Optional[float], is_int: bool) -> None:
+        if value is None:
+            return  # error already reported
+        if req.kind == "read":
+            self._write(encode_param_value(req.name, value, is_int, self._next_seq()))
+            return
+        new_value, error = typed_value(req.value, is_int)
+        if error:
+            self._param_reply_error(req.name, error)
+            return
+        param_value = ParameterValue()
+        if is_int:
+            param_value.type = ParameterType.PARAMETER_INTEGER
+            param_value.integer_value = int(new_value)
+        else:
+            param_value.type = ParameterType.PARAMETER_DOUBLE
+            param_value.double_value = float(new_value)
+        request = SetParameters.Request()
+        request.parameters = [Parameter(name=req.name, value=param_value)]
+        self.get_logger().warning(
+            f"[{_now()}] PARAM WRITE {req.name}: {value:g} -> {new_value:g}"
+        )
+        future = self._param_set.call_async(request)
+        future.add_done_callback(lambda f: self._param_after_set(req.name, f))
+
+    def _param_after_set(self, name: str, future) -> None:
+        try:
+            result = future.result().results[0]
+        except Exception as exc:  # noqa: BLE001 -- service failure
+            self._param_reply_error(name, f"set failed: {exc!r}")
+            return
+        if not result.successful:
+            self._param_reply_error(name, f"FCU refused: {result.reason or 'no reason given'}")
+            return
+        # Read back what the FCU now holds -- that is what the GCS shows.
+        self._param_fetch(name, lambda value, is_int: self._param_confirm(name, value, is_int))
+
+    def _param_confirm(self, name: str, value: Optional[float], is_int: bool) -> None:
+        if value is None:
+            return
+        self.get_logger().warning(f"[{_now()}] PARAM {name} is now {value:g} on the FCU")
+        self._write(encode_param_value(name, value, is_int, self._next_seq()))
+
+    def _param_fetch(self, name: str, then) -> None:
+        """Current FCU value of `name` via MAVROS: then(value, is_integer),
+        or reports the error and calls then(None, False)."""
+        if not self._param_get.service_is_ready():
+            self._param_reply_error(name, "MAVROS parameter service not available")
+            then(None, False)
+            return
+        request = GetParameters.Request()
+        request.names = [name]
+
+        def done(future) -> None:
+            try:
+                pv = future.result().values[0]
+            except Exception as exc:  # noqa: BLE001
+                self._param_reply_error(name, f"read failed: {exc!r}")
+                then(None, False)
+                return
+            if pv.type == ParameterType.PARAMETER_INTEGER:
+                then(float(pv.integer_value), True)
+            elif pv.type == ParameterType.PARAMETER_DOUBLE:
+                then(float(pv.double_value), False)
+            else:
+                self._param_reply_error(name, "unknown parameter (or MAVROS has not loaded the list yet)")
+                then(None, False)
+
+        self._param_get.call_async(request).add_done_callback(done)
+
+    def _param_reply_error(self, name: str, reason: str) -> None:
+        text = f"{PARAM_TEXT_PREFIX}{name}: {reason}"
+        self.get_logger().warning(f"[{_now()}] {text}")
+        chunks = statustext_chunks(text)
+        text_id = 0
+        if len(chunks) > 1:
+            # 0x8000+ so it never matches the telemetry relay's chunk ids
+            self._param_text_id = 0x8000 + (self._param_text_id + 1) % 0x7FFF
+            text_id = self._param_text_id
+        for chunk_seq, chunk in enumerate(chunks):
+            self._write(
+                encode_statustext(MAV_SEVERITY_WARNING, chunk, self._next_seq(), text_id, chunk_seq)
+            )
+
     def _forward(self, decision: Decision, nonce: int) -> None:
         if self._dry_run:
             self.get_logger().warning(f"[{_now()}] DRY RUN: not publishing {decision.forward!r}")
@@ -345,6 +477,7 @@ class RadioCommandNode(Node):
             "active_mission": self._active_mission,
             "last_command": self._last_command,
             "dry_run": self._dry_run,
+            "allow_param_write": self._allow_param_write,
         }
         self._status_pub.publish(String(data=json.dumps(status)))
 

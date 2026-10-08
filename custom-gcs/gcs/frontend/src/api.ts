@@ -12,6 +12,7 @@ import type {
   MapResponse,
   Mission,
   MultiStepFlightTestStatusResponse,
+  ParamResponse,
   PathResponse,
   PerceptionDetectionsResponse,
   PerceptionStatusResponse,
@@ -214,4 +215,23 @@ export function getSimulationCoverage(): Promise<CoverageResponse> {
 
 export function getSimulationPath(): Promise<PathResponse> {
   return getJson<PathResponse>("/api/simulation/path");
+}
+
+// -- Bench Setup page (only when the backend runs with GCS_SETUP_ENABLED) --
+// A parameter request can take several radio round trips plus the FCU
+// write, so the timeout is generous.
+const PARAM_TIMEOUT_MS = 10000;
+
+export async function getParam(name: string): Promise<ParamResponse> {
+  const path = `/api/setup/param/${encodeURIComponent(name)}`;
+  const res = await fetch(path);
+  if (!res.ok) {
+    const detail = await extractErrorDetail(res);
+    throw new Error(detail ?? `GET ${path} failed: HTTP ${res.status}`);
+  }
+  return (await res.json()) as ParamResponse;
+}
+
+export function setParam(name: string, value: number): Promise<ParamResponse> {
+  return postJson<ParamResponse>("/api/setup/param", { name, value }, PARAM_TIMEOUT_MS);
 }

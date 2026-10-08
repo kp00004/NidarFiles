@@ -88,3 +88,9 @@ HOVER_VALUE_KEYS = {
 }
 
 STATUSTEXT_CHUNK_LEN = 50
+
+# Bench parameter access (Setup page; Jetson needs start_jetson.sh --setup
+# for writes): GCS -> Jetson PARAM_REQUEST_READ / PARAM_SET by name;
+# Jetson -> GCS PARAM_VALUE (value now on the FCU) or a STATUSTEXT
+# "PARAM: <NAME>: <reason>" when refused.
+PARAM_TEXT_PREFIX = "PARAM: "
