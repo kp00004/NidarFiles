@@ -307,10 +307,12 @@ The Jetson refuses a START for one mission while the other is running
 Not a mission — a live display. Plug the RPLIDAR A2 into a Jetson USB port
 and start with `--lidar` (combine freely, e.g. `--dry-run --lidar`).
 
-- The Jetson finds the LiDAR by asking each USB serial port (the LiDAR's USB
-  adapter and the radio use the same chip, so their Linux names look the
-  same) and gives the radio the other port. It prints
-  `RPLIDAR on /dev/ttyUSBx …` and `radio -> /dev/ttyUSBy`.
+- The LiDAR's USB adapter and the radio use the same chip, so their Linux
+  names look the same. Whenever two or more USB serial ports are plugged in
+  (with or without `--lidar`), `start_jetson.sh` asks each port which one is
+  the RPLIDAR and gives the radio the other one. It prints
+  `RPLIDAR on /dev/ttyUSBx …` and `radio -> /dev/ttyUSBy`. Both work at the
+  same time.
 - `lidar_node` publishes the full scan on ROS `/scan` (for SLAM later);
   the radio carries a **72-sector summary** (nearest obstacle every 5°,
   ~180 bytes) **once per second**.

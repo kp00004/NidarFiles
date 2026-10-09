@@ -90,27 +90,32 @@ source "$HOME/nidar_ws/install/setup.bash"
 python3 -c "import nidar_autonomy.radio_command_node" 2>/dev/null || fail "nidar_autonomy (with radio_command_node) not importable -- rebuild with setup_jetson.sh"
 set -u
 
-# -- LiDAR port (before anything opens the radio) ------------------------------
+# -- USB serial ports: radio vs LiDAR (before anything opens the radio) ---------
 # The RPLIDAR's USB adapter and the radio are both CP2102 with the same serial
-# number, so /dev/serial/by-id can't tell them apart: ask each port which one
-# answers like an RPLIDAR, and give the radio the other port.
+# number, so /dev/serial/by-id can't tell them apart. Whenever more than one
+# USB serial port is present (or --lidar is given), ask each port which one
+# answers like an RPLIDAR and give the radio another port -- so a plugged-in
+# LiDAR can never take the radio's place, with or without --lidar.
 LIDAR_PORT=""
-if $LIDAR; then
-  say "looking for the RPLIDAR on the USB serial ports..."
+USB_SERIAL_COUNT=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | wc -l)
+if $LIDAR || [ "$USB_SERIAL_COUNT" -gt 1 ]; then
+  say "checking $USB_SERIAL_COUNT USB serial port(s) for the RPLIDAR..."
   eval "$(python3 -m nidar_autonomy.rplidar_probe)"
   if [ -z "$LIDAR_PORT" ]; then
-    say "WARNING: no RPLIDAR answered (ports: ${OTHER_PORTS:-none}) -- continuing WITHOUT LiDAR"
+    $LIDAR && say "WARNING: no RPLIDAR answered (ports: ${OTHER_PORTS:-none}) -- continuing WITHOUT LiDAR"
     LIDAR=false
   else
-    say "RPLIDAR on $LIDAR_PORT @ $LIDAR_BAUD ($LIDAR_INFO)"
-    if [ -z "${NIDAR_RADIO_PORT:-}" ]; then
+    say "RPLIDAR on $LIDAR_PORT @ $LIDAR_BAUD ($LIDAR_INFO)$($LIDAR || echo ' -- not used (no --lidar)')"
+    if [ -n "${NIDAR_RADIO_PORT:-}" ]; then
+      [ "$(readlink -f "$NIDAR_RADIO_PORT")" = "$LIDAR_PORT" ] && fail "NIDAR_RADIO_PORT=$NIDAR_RADIO_PORT is the LiDAR, not the radio"
+    else
       read -r FIRST_OTHER _ <<<"${OTHER_PORTS:-}"
       if [ -n "${FIRST_OTHER:-}" ]; then
         RADIO_PORT="$FIRST_OTHER"
         RADIO_FALLBACK_PORT="$FIRST_OTHER"
         say "radio -> $RADIO_PORT (the USB serial port that is not the LiDAR)"
       else
-        say "WARNING: no other USB serial port for the radio"
+        say "WARNING: only the LiDAR is plugged in -- no USB serial port left for the radio"
       fi
     fi
   fi
