@@ -1,7 +1,8 @@
 """Find the RPLIDAR among the Jetson's USB serial ports by asking each one
-for its device info (RPLIDAR GET_INFO). Needed because the RPLIDAR's USB
-adapter and the MicroLR900 radio both use a CP2102 with the same serial
-number, so /dev/serial/by-id cannot tell them apart.
+for its device info (RPLIDAR GET_INFO). The RPLIDAR's USB adapter and the
+MicroLR900 radio are both CP2102 chips; their /dev/serial/by-id names differ
+on our units but CP2102 adapters MAY share a name, so this probe does not
+depend on device names at all.
 
     python3 -m nidar_autonomy.rplidar_probe
 prints shell assignments for start_jetson.sh, e.g.

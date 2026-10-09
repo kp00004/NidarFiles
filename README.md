@@ -307,12 +307,13 @@ The Jetson refuses a START for one mission while the other is running
 Not a mission — a live display. Plug the RPLIDAR A2 into a Jetson USB port
 and start with `--lidar` (combine freely, e.g. `--dry-run --lidar`).
 
-- The LiDAR's USB adapter and the radio use the same chip, so their Linux
-  names look the same. Whenever two or more USB serial ports are plugged in
-  (with or without `--lidar`), `start_jetson.sh` asks each port which one is
-  the RPLIDAR and gives the radio the other one. It prints
+- The LiDAR's USB adapter and the radio use the same chip (CP2102). Their
+  Linux names differ on our units, but such adapters *may* share a name, so
+  the script doesn't rely on names: whenever two or more USB serial ports
+  are plugged in (with or without `--lidar`), `start_jetson.sh` asks each
+  port which one is the RPLIDAR and gives the radio the other one. It prints
   `RPLIDAR on /dev/ttyUSBx …` and `radio -> /dev/ttyUSBy`. Both work at the
-  same time.
+  same time. Verified on the real A2M12 (model 0x2C, 256000 baud, ~12 scans/s).
 - `lidar_node` publishes the full scan on ROS `/scan` (for SLAM later);
   the radio carries a **72-sector summary** (nearest obstacle every 5°,
   ~180 bytes) **once per second**.
@@ -323,7 +324,7 @@ Settings (environment variables before `start_jetson.sh`):
 `NIDAR_LIDAR_RATE_HZ` (default 1; 2 for a smoother view, if START/ABORT
 answers stay on the 1st attempt), `NIDAR_LIDAR_YAW_DEG` — the direction of
 the LiDAR's 0° mark (its motor/cable side faces backwards on the A2)
-relative to the nose, clockwise. Check it: put a box in front of the drone,
+relative to the nose, clockwise (whole numbers are fine, e.g. `270`). Check it: put a box in front of the drone,
 it must appear at the top of the panel; if it appears at the right, set 270
 (…at the bottom 180, at the left 90). If no LiDAR answers, the stack starts
 without it (`WARNING: no RPLIDAR answered`).

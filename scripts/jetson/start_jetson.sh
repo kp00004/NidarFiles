@@ -66,6 +66,20 @@ PIDS=()
 say() { echo "[$(date +%H:%M:%S)] $*"; }
 fail() { say "STOP: $*"; exit 1; }
 
+# ros2 reads "-p name:=270" as an INTEGER, and a node that declares the
+# parameter as a double then refuses it (InvalidParameterTypeException) and
+# exits. Every float-typed parameter passed below goes through ros_double,
+# which turns a whole number into a decimal ("270" -> "270.0") and rejects
+# anything that isn't a plain number.
+ros_double() {
+  local v="$1"
+  [[ "$v" =~ ^[+-]?[0-9]+(\.[0-9]+)?$ ]] || return 1
+  [[ "$v" == *.* ]] && echo "$v" || echo "$v.0"
+}
+TELEMETRY_RATE_HZ="$(ros_double "$TELEMETRY_RATE_HZ")" || fail "NIDAR_TELEMETRY_RATE_HZ must be a number (e.g. 2 or 2.0)"
+LIDAR_RATE_HZ="$(ros_double "$LIDAR_RATE_HZ")" || fail "NIDAR_LIDAR_RATE_HZ must be a number (e.g. 1 or 0.5)"
+LIDAR_YAW_DEG="$(ros_double "$LIDAR_YAW_DEG")" || fail "NIDAR_LIDAR_YAW_DEG must be a number of degrees (e.g. 0, 90, 180, 270)"
+
 cleanup() {
   say "stopping ${#PIDS[@]} processes"
   for pid in "${PIDS[@]}"; do kill -INT "$pid" 2>/dev/null; done
@@ -91,11 +105,13 @@ python3 -c "import nidar_autonomy.radio_command_node" 2>/dev/null || fail "nidar
 set -u
 
 # -- USB serial ports: radio vs LiDAR (before anything opens the radio) ---------
-# The RPLIDAR's USB adapter and the radio are both CP2102 with the same serial
-# number, so /dev/serial/by-id can't tell them apart. Whenever more than one
-# USB serial port is present (or --lidar is given), ask each port which one
-# answers like an RPLIDAR and give the radio another port -- so a plugged-in
-# LiDAR can never take the radio's place, with or without --lidar.
+# The RPLIDAR's USB adapter and the radio are both CP2102 chips. On our units
+# their /dev/serial/by-id names differ (the LiDAR's has a long unique serial,
+# the radio's ends in "Controller_0001"), but CP2102 adapters MAY share a
+# name, so the port choice does not rely on names: whenever more than one USB
+# serial port is present (or --lidar is given), ask each port which one
+# answers like an RPLIDAR (GET_INFO) and give the radio another port -- so a
+# plugged-in LiDAR can never take the radio's place, with or without --lidar.
 LIDAR_PORT=""
 USB_SERIAL_COUNT=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | wc -l)
 if $LIDAR || [ "$USB_SERIAL_COUNT" -gt 1 ]; then
