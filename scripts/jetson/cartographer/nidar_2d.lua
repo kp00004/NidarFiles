@@ -12,8 +12,10 @@ options.published_frame = "laser"
 options.provide_odom_frame = true
 options.use_odometry = false
 
--- RPLIDAR A2: 0.15 .. 12 m
-TRAJECTORY_BUILDER_2D.min_range = 0.15
+-- RPLIDAR A2: 0.15 .. 12 m. min_range is replaced at start by
+-- NIDAR_LIDAR_MIN_RANGE_M (default 0.4): returns closer than that are the
+-- person holding the LiDAR, or the drone's own frame/props, not the room.
+TRAJECTORY_BUILDER_2D.min_range = 0.4
 TRAJECTORY_BUILDER_2D.max_range = 12.
 TRAJECTORY_BUILDER_2D.missing_data_ray_length = 3.
 TRAJECTORY_BUILDER_2D.use_imu_data = false

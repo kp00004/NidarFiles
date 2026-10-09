@@ -10,7 +10,7 @@ formats.
 
 Coarse grid: aligned to whole multiples of the cell size in the map frame,
 so cells don't shift when Cartographer grows its map. Cell = OCCUPIED if any
-fine cell in it is occupied (>= 65), else FREE if any is free (<= 35), else
+fine cell in it is occupied (>= 60), else FREE if any is free (<= 45), else
 UNKNOWN. Packed 2 bits per cell (4 cells per byte, first cell in the low
 bits).
 
@@ -29,8 +29,11 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 UNKNOWN, FREE, OCCUPIED = 0, 1, 2
-OCCUPIED_MIN = 65
-FREE_MAX = 35
+# Cartographer's grid starts a cell at 55 after one hit / 49 after one miss
+# and moves it a little per scan; 65 hid walls that were passed quickly
+# (seen live 2026-10-09: dotted walls).
+OCCUPIED_MIN = 60
+FREE_MAX = 45
 
 MAP_ROWS_TYPE = 0x8001
 SLAM_POSE_TYPE = 0x8002

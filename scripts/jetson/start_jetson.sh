@@ -54,6 +54,9 @@ LIDAR_YAW_DEG="${NIDAR_LIDAR_YAW_DEG:-0}"
 # Map (--map): packets per second (~145 B each) and the cell size sent to the GCS.
 MAP_RATE_HZ="${NIDAR_MAP_RATE_HZ:-2.0}"
 MAP_CELL_M="${NIDAR_MAP_CELL_M:-0.25}"
+# Ignore LiDAR returns closer than this (m): the person holding it, or the
+# drone's own frame/props. Applies to the LiDAR panel and the map.
+LIDAR_MIN_RANGE_M="${NIDAR_LIDAR_MIN_RANGE_M:-0.4}"
 
 DRY_RUN=false
 SETUP=false
@@ -93,6 +96,7 @@ LIDAR_RATE_HZ="$(ros_double "$LIDAR_RATE_HZ")" || fail "NIDAR_LIDAR_RATE_HZ must
 LIDAR_YAW_DEG="$(ros_double "$LIDAR_YAW_DEG")" || fail "NIDAR_LIDAR_YAW_DEG must be a number of degrees (e.g. 0, 90, 180, 270)"
 MAP_RATE_HZ="$(ros_double "$MAP_RATE_HZ")" || fail "NIDAR_MAP_RATE_HZ must be a number (e.g. 2 or 1.0)"
 MAP_CELL_M="$(ros_double "$MAP_CELL_M")" || fail "NIDAR_MAP_CELL_M must be a number of metres (e.g. 0.25)"
+LIDAR_MIN_RANGE_M="$(ros_double "$LIDAR_MIN_RANGE_M")" || fail "NIDAR_LIDAR_MIN_RANGE_M must be a number of metres (e.g. 0.4)"
 
 cleanup() {
   say "stopping ${#PIDS[@]} processes"
@@ -214,7 +218,8 @@ run hover_mission python3 "$NIDAR_DIR/missions/hover/mission.py"
 run motor_test_mission python3 "$NIDAR_DIR/missions/motor_test/mission.py"
 if $LIDAR; then
   run lidar_node ros2 run nidar_autonomy lidar_node --ros-args \
-    -p "serial_port:=$LIDAR_PORT" -p "baud:=$LIDAR_BAUD" -p "yaw_offset_deg:=$LIDAR_YAW_DEG"
+    -p "serial_port:=$LIDAR_PORT" -p "baud:=$LIDAR_BAUD" -p "yaw_offset_deg:=$LIDAR_YAW_DEG" \
+    -p "range_min_m:=$LIDAR_MIN_RANGE_M"
 fi
 if $MAP && ! $LIDAR; then
   say "WARNING: --map without a LiDAR -- no map"
@@ -230,6 +235,7 @@ elif $MAP; then
     CARTO_DIR="$LOG_DIR/cartographer"
     mkdir -p "$CARTO_DIR"
     cp "$CARTO_SHARE/revo_lds.lua" "$NIDAR_DIR/scripts/jetson/cartographer/nidar_2d.lua" "$CARTO_DIR/"
+    sed -i "s/^TRAJECTORY_BUILDER_2D.min_range = .*/TRAJECTORY_BUILDER_2D.min_range = $LIDAR_MIN_RANGE_M/" "$CARTO_DIR/nidar_2d.lua"
     run cartographer ros2 run cartographer_ros cartographer_node \
       -configuration_directory "$CARTO_DIR" -configuration_basename nidar_2d.lua
     run cartographer_grid ros2 run cartographer_ros cartographer_occupancy_grid_node \

@@ -357,7 +357,14 @@ corridors and glass are hard. The map starts where the LiDAR is switched on
 Needs Cartographer once: `setup_jetson.sh` installs
 `ros-humble-cartographer-ros` (internet). Settings: `NIDAR_MAP_RATE_HZ`
 (map packets per second, default 2), `NIDAR_MAP_CELL_M` (default 0.25; the
-competition grid is 1 m). Cartographer's log: `cartographer.log`.
+competition grid is 1 m), `NIDAR_LIDAR_MIN_RANGE_M` (default 0.4 m: closer
+returns are ignored -- the person holding the LiDAR, or the drone's own
+frame/props; raise it if a white blob follows the blue dot). Cartographer's
+log: `cartographer.log`.
+
+Reading the map: dark = free space seen through, white = walls/obstacles,
+grey = not seen yet. Walls fill in as you walk along them; a wall seen
+from one spot only is dotted.
 
 ## 8. Setup tab (Pixhawk parameters)
 
