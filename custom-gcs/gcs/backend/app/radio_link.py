@@ -128,6 +128,9 @@ class RadioLink:
         self._param_waiters: dict[str, dict] = {}
         self._param_lock = threading.Lock()  # one parameter request at a time
         self._texts = TextAssembler()
+        # Radio diagnostics: messages received per type (and BAD_DATA = bytes
+        # that failed to parse / checksum), to tell "not sent" from "lost".
+        self._rx_counts: dict[str, int] = {}
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -185,6 +188,8 @@ class RadioLink:
             if not data:
                 continue
             for msg in self._mav.parse_buffer(data) or []:
+                kind = msg.get_type()
+                self._rx_counts[kind] = self._rx_counts.get(kind, 0) + 1
                 self._on_message(msg)
 
     def _heartbeat_loop(self) -> None:
@@ -369,6 +374,8 @@ class RadioLink:
             ),
             "jetson_mission": self._jetson_mission,
             "last_command": None if self._last_command is None else asdict(self._last_command),
+            "rx_counts": dict(sorted(self._rx_counts.items())),
+            "rx_bad_bytes": self._mav.total_receive_errors,
         }
 
 
@@ -403,4 +410,6 @@ class DisabledRadioLink:
             "jetson_mission_state": None,
             "jetson_mission": None,
             "last_command": None,
+            "rx_counts": {},
+            "rx_bad_bytes": 0,
         }

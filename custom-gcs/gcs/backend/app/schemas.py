@@ -370,6 +370,10 @@ class RadioStatusResponse(BaseModel):
     jetson_mission_state: str | None = None
     # Which mission that state belongs to ("hover", "motor_test"; None = unknown).
     jetson_mission: str | None = None
+    # Radio diagnostics: messages received per MAVLink type since start, and
+    # frames that failed to parse/checksum (garbled on the radio).
+    rx_counts: dict[str, int] = {}
+    rx_bad_bytes: int = 0
     last_command: RadioLastCommand | None = None
 
 
