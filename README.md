@@ -156,7 +156,11 @@ power, address 1000, channel 0 (already set on this pair).
 ~/NidarFiles/scripts/jetson/start_jetson.sh             # LIVE: START really runs the mission
 ~/NidarFiles/scripts/jetson/start_jetson.sh --setup     # LIVE + allows parameter writes from the Setup tab
 ~/NidarFiles/scripts/jetson/start_jetson.sh --lidar     # also runs the RPLIDAR A2 and shows its scan on the GCS (7.3)
+~/NidarFiles/scripts/jetson/start_jetson.sh --no-fcu --lidar   # NO Pixhawk connected: radio link + LiDAR only (START refused)
 ```
+
+Without a Pixhawk the normal start stops at `Pixhawk … does not answer` and
+the radio never comes up — use `--no-fcu` for radio/LiDAR work on the bench.
 
 Options can be combined (`--dry-run --setup`). **Ctrl+C** stops everything.
 Logs: `~/NidarFiles/logs/<date_time>/` (one file per program).

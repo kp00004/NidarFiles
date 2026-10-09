@@ -16,6 +16,8 @@
 #
 # Usage:
 #   start_jetson.sh            full stack (a radio START will fly the hover)
+#   start_jetson.sh --no-fcu   no Pixhawk connected: skip the Pixhawk/MAVROS
+#                              checks; radio link (+ LiDAR) only, START refused
 #   start_jetson.sh --lidar    also run the RPLIDAR A2 and send its scan to the
 #                              GCS over the radio (LiDAR panel)
 #   start_jetson.sh --setup    also let the GCS Setup page write Pixhawk
@@ -50,12 +52,14 @@ LIDAR_YAW_DEG="${NIDAR_LIDAR_YAW_DEG:-0}"
 DRY_RUN=false
 SETUP=false
 LIDAR=false
+NO_FCU=false
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
     --setup) SETUP=true ;;
     --lidar) LIDAR=true ;;
-    *) echo "unknown option: $arg (use --dry-run, --setup, --lidar)"; exit 1 ;;
+    --no-fcu) NO_FCU=true ;;
+    *) echo "unknown option: $arg (use --dry-run, --setup, --lidar, --no-fcu)"; exit 1 ;;
   esac
 done
 
@@ -142,15 +146,21 @@ if pgrep -f "nidar_autonomy/mission_state_node|lib/nidar_autonomy/mission_state_
   fail "mission_state_node is running -- it would arm on START by itself. Stop it first."
 fi
 
+if $NO_FCU; then
+  say "NO-FCU MODE: Pixhawk and MAVROS skipped -- radio, telemetry heartbeat and LiDAR only; START is rejected (FCU_NOT_CONNECTED)"
+else
 # -- Pixhawk link ---------------------------------------------------------------
+if ip -br link show "$ETH_IF" 2>/dev/null | grep -qw DOWN; then
+  say "$ETH_IF is DOWN -- bringing it up"
+  sudo ip link set "$ETH_IF" up || fail "could not bring $ETH_IF up"
+  sleep 2
+fi
 if ! ip -4 addr show "$ETH_IF" | grep -q "$JETSON_ETH_IP"; then
   say "$ETH_IF lacks $JETSON_ETH_IP -- restoring (runtime only, see SOP Phase 3)"
   sudo ip addr add "$JETSON_ETH_IP/24" dev "$ETH_IF" || fail "could not set $JETSON_ETH_IP on $ETH_IF"
 fi
-ping -c 2 -W 1 "$PIXHAWK_IP" >/dev/null 2>&1 || fail "Pixhawk $PIXHAWK_IP does not answer on $ETH_IF"
+ping -c 2 -W 1 "$PIXHAWK_IP" >/dev/null 2>&1 || fail "Pixhawk $PIXHAWK_IP does not answer on $ETH_IF (no Pixhawk connected? use --no-fcu for radio/LiDAR only)"
 say "Pixhawk reachable at $PIXHAWK_IP"
-
-[ -e "$RADIO_PORT" ] || [ -e "$RADIO_FALLBACK_PORT" ] || say "WARNING: radio not found ($RADIO_PORT / $RADIO_FALLBACK_PORT) -- radio node will keep retrying"
 
 # -- MAVROS ---------------------------------------------------------------------
 if pgrep -f "mavros_node" >/dev/null; then
@@ -168,6 +178,9 @@ for _ in $(seq 1 15); do
 done
 $connected || fail "MAVROS not connected to the Pixhawk (see $LOG_DIR/mavros.log)"
 say "MAVROS connected"
+fi
+
+[ -e "$RADIO_PORT" ] || [ -e "$RADIO_FALLBACK_PORT" ] || say "WARNING: radio not found ($RADIO_PORT / $RADIO_FALLBACK_PORT) -- radio node will keep retrying"
 
 # -- onboard-autonomy nodes -------------------------------------------------------
 run command_node ros2 run nidar_autonomy command_node
