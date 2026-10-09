@@ -449,9 +449,32 @@ def test_map_rows_build_an_occupancy_grid():
     assert m["data"] == [-1] * 4 + [100, 0, 0, -1] + [-1] * 4
 
 
-def test_new_map_geometry_starts_fresh():
+def test_growing_map_keeps_its_cells():
+    """While walking the map grows (new origin/size): the cells already
+    received stay, shifted to the same world position, instead of the map
+    vanishing until every row is re-sent (seen live 2026-10-09)."""
+    client = RadioTelemetryClient(Clock())
+    _feed(client, map_rows(25, 0, 0, 2, 2, 0, [2, 1, 1, 2]))      # 2x2 at origin (0,0)
+    _feed(client, map_rows(25, -25, 0, 3, 3, 2, [0, 0, 0]))       # grew 1 cell left and 1 row up
+    m = client.latest("/map")
+    assert (m["info"]["width"], m["info"]["height"]) == (3, 3)
+    assert m["data"] == [-1, 100, 0,
+                         -1, 0, 100,
+                         -1, -1, -1]
+
+
+def test_new_cell_size_starts_fresh():
     client = RadioTelemetryClient(Clock())
     _feed(client, map_rows(25, 0, 0, 2, 2, 0, [2, 2, 2, 2]))
+    _feed(client, map_rows(50, 0, 0, 2, 2, 0, [1, 1]))
+    assert client.latest("/map")["data"] == [0, 0, -1, -1]
+
+
+def test_map_after_long_silence_starts_fresh():
+    clock = Clock()
+    client = RadioTelemetryClient(clock)
+    _feed(client, map_rows(25, 0, 0, 2, 2, 0, [2, 2, 2, 2]))
+    clock.t += 60  # Jetson restarted: a new SLAM map
     _feed(client, map_rows(25, -25, 0, 3, 2, 0, [1, 1, 1]))
     assert client.latest("/map")["data"] == [0, 0, 0, -1, -1, -1]
 

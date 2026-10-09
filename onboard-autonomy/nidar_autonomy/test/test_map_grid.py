@@ -167,3 +167,31 @@ def test_relay_sends_no_map_when_stale():
     relay = TelemetryRelay(Seq(), 0.0, lidar_rate_hz=0, map_rate_hz=2.0)
     relay.update_map(0.0, GridMeta(25, 0, 0, 10, 10), bytearray(100))
     assert all(f.msgid != MSG_ID_TUNNEL for f in MavlinkStreamParser().feed(b"".join(relay.tick(30.0))))
+
+
+def test_geometry_changes_only_at_block_edges():
+    """Growing the fine map by a few cells (as Cartographer does while you
+    walk) must not change what the GCS receives as the grid geometry."""
+    data, w, h, res, ox, oy = room()
+    meta, _ = coarsen(data, w, h, res, ox, oy, 0.25)
+    assert meta.width % 8 == 0 and meta.height % 8 == 0
+    assert meta.origin_x_cm % 200 == 0 and meta.origin_y_cm % 200 == 0
+    for extra in (1, 3, 5):  # 0.1 .. 0.5 m more map on the right / top
+        m2, _ = coarsen([-1] * ((w + extra) * (h + extra)), w + extra, h + extra, res, ox, oy, 0.25)
+        assert m2 == meta, extra
+
+
+def test_coarse_cells_stay_put_when_the_grid_grows():
+    data, w, h, res, ox, oy = room()
+    meta, cells = coarsen(data, w, h, res, ox, oy, 0.25)
+    # same room, fine map extended 3 m to the left: the room's cells keep their world position
+    pad = 30
+    big = []
+    for r in range(h):
+        big += [-1] * pad + data[r * w:(r + 1) * w]
+    meta2, cells2 = coarsen(big, w + pad, h, res, ox - pad * res, oy, 0.25)
+    shift = (meta.origin_x_cm - meta2.origin_x_cm) // 25
+    assert shift > 0
+    for r in range(meta.height):
+        for c in range(meta.width):
+            assert cells2[r * meta2.width + c + shift] == cells[r * meta.width + c]

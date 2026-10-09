@@ -73,6 +73,9 @@ HOVER_VALUES_STALE_S = 3.0
 MISSION_DETAIL_STALE_S = 12.0
 LIDAR_STALE_S = 5.0
 SLAM_POSE_STALE_S = 3.0
+# No map packet for this long, then a new geometry = a new SLAM map (Jetson
+# restarted): start empty instead of shifting the old cells into it.
+MAP_RESTART_S = 15.0
 # OccupancyGrid values the Map panel already draws
 _GRID_VALUE = {0: -1, 1: 0, 2: 100}
 _MAP_HEADER = struct.Struct("<HhhBBBB")
@@ -211,6 +214,31 @@ class RadioTelemetryClient:
         self._statustext_history.append({"severity": 4 if warning else 6, "text": f"{name}: {text}"})
         del self._statustext_history[:-STATUSTEXT_HISTORY]
 
+    def _regrid(self, meta: tuple, now: float) -> list[int]:
+        """New map geometry. While mapping, the map grows (new size/origin,
+        same cell size): copy the cells we have to their same world position
+        in the new grid, so the panel keeps showing the map while the Jetson
+        re-sends rows. A different cell size, or a long silence (the Jetson
+        was restarted: new SLAM frame), starts an empty map instead."""
+        cell_cm, ox, oy, w, h = meta
+        cells = [-1] * (w * h)
+        old = self._map_meta
+        last = self._at.get("map")
+        if old is None or old[0] != cell_cm or last is None or now - last > MAP_RESTART_S:
+            return cells
+        _, oox, ooy, ow, oh = old
+        dx = (oox - ox) // cell_cm  # old column 0 is new column dx
+        dy = (ooy - oy) // cell_cm
+        for r in range(oh):
+            nr = r + dy
+            if not 0 <= nr < h:
+                continue
+            for c in range(ow):
+                nc = c + dx
+                if 0 <= nc < w:
+                    cells[nr * w + nc] = self._map_cells[r * ow + c]
+        return cells
+
     def _apply_map_rows(self, payload: bytes, now: float) -> None:
         """Write received rows into the map; a new geometry (size, origin,
         cell size) starts a fresh, all-unknown map."""
@@ -223,8 +251,8 @@ class RadioTelemetryClient:
             return
         meta = (cell_cm, ox, oy, w, h)
         if self._map_meta != meta:
+            self._map_cells = self._regrid(meta, now)
             self._map_meta = meta
-            self._map_cells = [-1] * (w * h)
         base = row0 * w
         for i in range(count):
             self._map_cells[base + i] = _GRID_VALUE.get((body[i >> 2] >> ((i & 3) * 2)) & 0x3, -1)

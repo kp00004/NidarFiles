@@ -59,15 +59,22 @@ def coarsen(
     origin_x: float,
     origin_y: float,
     cell_m: float,
+    block: int = 8,
 ) -> Tuple[GridMeta, bytearray]:
     """Fine OccupancyGrid -> (meta, cells) with UNKNOWN/FREE/OCCUPIED per cell.
-    Caps at 255 x 255 coarse cells (64 m at 0.25 m)."""
-    cx0 = math.floor(origin_x / cell_m)
-    cy0 = math.floor(origin_y / cell_m)
-    cx1 = math.floor((origin_x + width * resolution - 1e-9) / cell_m)
-    cy1 = math.floor((origin_y + height * resolution - 1e-9) / cell_m)
-    w = max(1, min(MAX_DIM, cx1 - cx0 + 1))
-    h = max(1, min(MAX_DIM, cy1 - cy0 + 1))
+
+    The coarse bounds are rounded outwards to whole `block`s of cells (2 m at
+    0.25 m), so the geometry sent to the GCS changes only when the map grows
+    past a block edge -- not every time Cartographer extends its map by a
+    cell, which made the GCS keep restarting its map. Caps at 248 x 248
+    coarse cells (62 m at 0.25 m)."""
+    cx0 = (math.floor(origin_x / cell_m) // block) * block
+    cy0 = (math.floor(origin_y / cell_m) // block) * block
+    cx1 = (math.floor((origin_x + width * resolution - 1e-9) / cell_m) // block + 1) * block - 1
+    cy1 = (math.floor((origin_y + height * resolution - 1e-9) / cell_m) // block + 1) * block - 1
+    cap = (MAX_DIM // block) * block
+    w = max(1, min(cap, cx1 - cx0 + 1))
+    h = max(1, min(cap, cy1 - cy0 + 1))
     cells = bytearray(w * h)  # all UNKNOWN
     # column index of each fine column, computed once
     col_index = [math.floor((origin_x + (c + 0.5) * resolution) / cell_m) - cx0 for c in range(width)]
