@@ -143,7 +143,7 @@ class LidarNode(Node):
         msg.scan_time = 0.1
         msg.range_min = self._range_min
         msg.range_max = self._range_max
-        msg.ranges = [float(r) for r in laserscan_bins(turn, self._yaw_offset, BINS)]
+        msg.ranges = [float(r) for r in laserscan_bins(turn, self._yaw_offset, BINS, self._range_min)]
         self._pub.publish(msg)
         self._turns += 1
 

@@ -150,12 +150,22 @@ def encode_node(angle_deg: float, distance_mm: float, quality: int = 47, start: 
 # -- LaserScan (ROS) <-> radio sectors ----------------------------------------------
 
 
-def laserscan_bins(points: Sequence[Point], yaw_offset_deg: float = 0.0, bins: int = 360) -> List[float]:
+def laserscan_bins(
+    points: Sequence[Point], yaw_offset_deg: float = 0.0, bins: int = 360, range_min_m: float = 0.0
+) -> List[float]:
     """ROS sensor_msgs/LaserScan ranges (metres, inf = no return) for
     angle_min = -pi, increment = 2*pi/bins, COUNTER-clockwise from the
     vehicle's front. RPLIDAR angles are clockwise; yaw_offset_deg is the
-    LiDAR's 0° direction relative to the vehicle's nose (clockwise)."""
+    LiDAR's 0° direction relative to the vehicle's nose (clockwise).
+
+    Each bin holds its nearest return AT OR BEYOND range_min_m, so a wall
+    seen past close clutter in the same bin is kept. A bin with only
+    closer returns keeps that close value -- which consumers drop as
+    below range_min -- and NEVER becomes inf: "no return" would make SLAM
+    clear free space along the ray (missing_data_ray_length) and erase real
+    obstacles."""
     ranges = [math.inf] * bins
+    close = [math.inf] * bins  # nearest return below range_min_m, per bin
     step = 360.0 / bins
     for p in points:
         if p.distance_mm <= 0 or p.quality == 0:
@@ -163,9 +173,10 @@ def laserscan_bins(points: Sequence[Point], yaw_offset_deg: float = 0.0, bins: i
         ccw = -(p.angle_deg + yaw_offset_deg)  # vehicle frame, counter-clockwise
         index = int(math.floor(((ccw + 180.0) % 360.0) / step)) % bins
         metres = p.distance_mm / 1000.0
-        if metres < ranges[index]:
-            ranges[index] = metres
-    return ranges
+        target = ranges if metres >= range_min_m else close
+        if metres < target[index]:
+            target[index] = metres
+    return [r if math.isfinite(r) else c for r, c in zip(ranges, close)]
 
 
 def sectors_from_laserscan(

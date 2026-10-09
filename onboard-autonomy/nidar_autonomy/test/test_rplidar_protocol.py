@@ -101,3 +101,22 @@ def test_yaw_offset_rotates_into_vehicle_frame():
     ranges = laserscan_bins([Point(0.0, 1000, 40)], yaw_offset_deg=90.0)
     sectors = sectors_from_laserscan(ranges, -math.pi, 2 * math.pi / 360, 0.15, 12.0)
     assert sectors[18] == 100
+
+
+def test_bin_keeps_wall_behind_close_clutter():
+    # same 1-degree bin: clutter at 0.25 m and a wall at 3 m
+    ranges = laserscan_bins([Point(10.2, 250, 40), Point(10.6, 3000, 40)], range_min_m=0.4)
+    assert 3.0 in ranges
+
+
+def test_bin_with_only_close_returns_is_never_no_return():
+    """Only clutter inside the cutoff: keep the close value (dropped later as
+    below range_min) -- never inf, which SLAM would treat as clear space."""
+    ranges = laserscan_bins([Point(10.2, 250, 40)], range_min_m=0.4)
+    assert 0.25 in ranges
+    assert sum(math.isfinite(r) for r in ranges) == 1
+
+
+def test_default_cutoff_keeps_old_behaviour():
+    ranges = laserscan_bins([Point(10.2, 250, 40), Point(10.6, 3000, 40)])
+    assert 0.25 in ranges and 3.0 not in ranges
