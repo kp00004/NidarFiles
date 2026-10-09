@@ -61,17 +61,39 @@ STATUSTEXT_QUEUE = 20
 MISSION_DETAIL_RESEND_S = 5.0
 
 
+class Schedule:
+    """A fixed timetable: due every `period` seconds, measured from the
+    previous DUE time (not from when tick() happened to run), so the
+    average rate is exact. A tick arriving up to 10 % of a period early
+    still counts. Comparing against the last send time instead made 1 Hz
+    become ~0.77 Hz on the Jetson: a 2 Hz tick 1 ms early was skipped and
+    the send slipped half a tick, every time (measured 2026-10-09)."""
+
+    EARLY_FRACTION = 0.1
+
+    def __init__(self, period: float) -> None:
+        self.period = period
+        self._due: Optional[float] = None
+
+    def due(self, now: float) -> bool:
+        if self._due is None or now - self._due > self.period:
+            self._due = now  # first use, or after a long pause: restart the timetable here
+        if now < self._due - self.EARLY_FRACTION * self.period:
+            return False
+        self._due += self.period
+        return True
+
+
 class TelemetryRelay:
     def __init__(
         self, next_seq: Callable[[], int], start_time: float, lidar_rate_hz: float = DEFAULT_LIDAR_RATE_HZ
     ) -> None:
         self._next_seq = next_seq
         self._start = start_time
-        self._lidar_period = 1.0 / lidar_rate_hz if lidar_rate_hz > 0 else None
+        self._lidar_schedule = Schedule(1.0 / lidar_rate_hz) if lidar_rate_hz > 0 else None
         self._scan: Optional[Tuple[List[int], int, int]] = None  # sectors, min_cm, max_cm
         self._scan_at: Optional[float] = None
-        self._last_scan_sent: Optional[float] = None
-        self._last_slow: Optional[float] = None
+        self._slow_schedule = Schedule(SLOW_PERIOD_S)
 
         self._fcu: Optional[Tuple[bool, bool, bool, Optional[str], int]] = None
         self._fcu_at: Optional[float] = None
@@ -148,16 +170,14 @@ class TelemetryRelay:
         if self._fresh(self._orientation_at, now, ATTITUDE_STALE_S):
             frames.append(encode_attitude_quaternion(ms, *self._orientation, self._next_seq()))
 
-        if self._last_slow is None or now - self._last_slow >= SLOW_PERIOD_S - 1e-6:
-            self._last_slow = now
+        if self._slow_schedule.due(now):
             frames.extend(self._slow(now, ms))
 
         if (
-            self._lidar_period is not None
+            self._lidar_schedule is not None
             and self._fresh(self._scan_at, now, SCAN_STALE_S)
-            and (self._last_scan_sent is None or now - self._last_scan_sent >= self._lidar_period - 1e-6)
+            and self._lidar_schedule.due(now)
         ):
-            self._last_scan_sent = now
             sectors, min_cm, max_cm = self._scan
             frames.append(
                 encode_obstacle_distance(

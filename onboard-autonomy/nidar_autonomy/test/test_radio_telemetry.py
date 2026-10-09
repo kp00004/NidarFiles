@@ -335,3 +335,54 @@ def test_load_with_lidar_at_default_rate():
         relay.update_scan(now, SECTORS, 15, 1200)
         total += sum(len(f) for f in relay.tick(now))
     assert total / 10.0 < 500
+
+
+# -- rates under tick jitter (Jetson measured 0.77 Hz for "1 Hz", 2026-10-09) -----
+
+import random  # noqa: E402
+
+from nidar_autonomy.radio_telemetry import Schedule  # noqa: E402
+from nidar_autonomy.telem_command_codec import FCU_RELAY_COMPONENT_ID as _FCU  # noqa: E402
+
+
+def _jittered_run(seconds=120.0, tick=0.5, jitter=0.004, lidar_rate=1.0, seed=7):
+    rng = random.Random(seed)
+    relay = TelemetryRelay(Seq(), start_time=0.0, lidar_rate_hz=lidar_rate)
+    counts = {"scan": 0, "fcu_heartbeat": 0}
+    t = 0.0
+    while t < seconds:
+        now = t + rng.uniform(-jitter, jitter)
+        _fill(relay, now)
+        relay.update_scan(now, SECTORS, 15, 1200)
+        for f in _frames(relay.tick(now)):
+            if f.msgid == MSG_ID_OBSTACLE_DISTANCE:
+                counts["scan"] += 1
+            elif f.msgid == MSG_ID_HEARTBEAT and f.compid == _FCU:
+                counts["fcu_heartbeat"] += 1
+        t += tick
+    return counts
+
+
+def test_one_hz_stays_one_hz_with_jittered_ticks():
+    counts = _jittered_run()
+    assert 119 <= counts["scan"] <= 121
+    assert 119 <= counts["fcu_heartbeat"] <= 121
+
+
+def test_half_hz_lidar_with_jitter():
+    assert 59 <= _jittered_run(lidar_rate=0.5)["scan"] <= 61
+
+
+def test_schedule_restarts_after_a_pause():
+    s = Schedule(1.0)
+    assert s.due(0.0) and not s.due(0.5) and s.due(1.0)
+    assert s.due(10.0)  # long gap: no burst of catch-up sends
+    assert not s.due(10.5) and s.due(11.0)
+
+
+def test_schedule_accepts_slightly_early_ticks():
+    s = Schedule(1.0)
+    assert s.due(0.0)
+    assert s.due(0.999)  # 1 ms early still counts
+    assert not s.due(1.5)
+    assert s.due(2.0)
