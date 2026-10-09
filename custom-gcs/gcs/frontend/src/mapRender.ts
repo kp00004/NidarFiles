@@ -42,6 +42,8 @@ export interface RenderMapOptions {
   coverage?: CoverageResponse | null;
   path?: PathResponse | null;
   dronePosition?: { x: number; y: number } | null;
+  /** Heading in degrees, counter-clockwise from +x (map frame); draws an arrow. */
+  droneYawDeg?: number | null;
   target?: [number, number] | null;
   frontiers?: FrontierPointResponse[] | null;
   originX?: number;
@@ -59,6 +61,7 @@ export function renderOccupancyMapCanvas(canvas: HTMLCanvasElement, options: Ren
     coverage,
     path,
     dronePosition,
+    droneYawDeg,
     target,
     frontiers,
     originX = 0,
@@ -131,6 +134,17 @@ export function renderOccupancyMapCanvas(canvas: HTMLCanvasElement, options: Ren
     ctx.strokeStyle = "#fff";
     ctx.lineWidth = 1;
     ctx.stroke();
+    if (droneYawDeg != null) {
+      const a = (droneYawDeg * Math.PI) / 180;
+      const len = 14;
+      ctx.strokeStyle = COLOR_DRONE;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(dx, height - dy);
+      // canvas y grows downward: a counter-clockwise world angle is -sin on screen
+      ctx.lineTo(dx + len * Math.cos(a), height - dy - len * Math.sin(a));
+      ctx.stroke();
+    }
   }
 
   // -- current frontier/target --

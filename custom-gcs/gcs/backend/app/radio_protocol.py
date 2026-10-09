@@ -94,3 +94,12 @@ STATUSTEXT_CHUNK_LEN = 50
 # Jetson -> GCS PARAM_VALUE (value now on the FCU) or a STATUSTEXT
 # "PARAM: <NAME>: <reason>" when refused.
 PARAM_TEXT_PREFIX = "PARAM: "
+
+# SLAM map over the radio (Jetson map_grid.py): MAVLink TUNNEL payload types.
+# MAP_ROWS: <H cell_cm><h origin_x_cm><h origin_y_cm><B width><B height>
+#           <B row0><B nrows> + cells packed 2 bits each (0 unknown, 1 free,
+#           2 occupied; 4 per byte, first cell in the low bits), row-major,
+#           row 0 = lowest y.
+# SLAM_POSE: <h x_cm><h y_cm><h yaw_cdeg> in the map frame (yaw CCW from +x).
+MAP_ROWS_TYPE = 0x8001
+SLAM_POSE_TYPE = 0x8002

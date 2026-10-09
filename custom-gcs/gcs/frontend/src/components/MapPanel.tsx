@@ -75,9 +75,13 @@ export default function MapPanel({ telemetry }: { telemetry: TelemetryResponse |
       // Map origin is always (0,0) here: /api/map doesn't carry the
       // origin separately (see MapResponse) -- it's derived from the
       // telemetry mapping block when available, defaulting to (0,0).
-      originX: telemetry?.mapping?.origin_x ?? 0,
-      originY: telemetry?.mapping?.origin_y ?? 0,
-      dronePosition: telemetry?.pose?.position ?? null,
+      // Radio SLAM map: its own origin and the SLAM pose; otherwise the
+      // telemetry mapping block / FCU pose as before.
+      originX: map.origin_x ?? telemetry?.mapping?.origin_x ?? 0,
+      originY: map.origin_y ?? telemetry?.mapping?.origin_y ?? 0,
+      dronePosition: map.robot ?? telemetry?.pose?.position ?? null,
+      droneYawDeg: map.robot?.yaw_deg ?? null,
+      cellPx: Math.max(3, Math.min(8, Math.floor(720 / Math.max(map.width ?? 1, map.height ?? 1)))),
       target: telemetry?.autonomy?.target ?? telemetry?.navigation?.target ?? null,
       frontiers: frontiers?.points ?? null,
     });
@@ -90,6 +94,8 @@ export default function MapPanel({ telemetry }: { telemetry: TelemetryResponse |
         <div>
           <div className="text-xs text-dim mb-2">
             {map!.width} × {map!.height} cells, resolution {map!.resolution} m/cell
+            {map!.age_s != null && ` — updated ${map!.age_s} s ago`}
+            {map!.robot && ` — position ${map!.robot.x.toFixed(2)}, ${map!.robot.y.toFixed(2)} m, heading ${Math.round(map!.robot.yaw_deg)}°`}
             {telemetry?.mapping?.explored_pct != null && ` — ${telemetry.mapping.explored_pct}% searched`}
           </div>
           <div className="overflow-auto border border-border rounded">
@@ -98,8 +104,8 @@ export default function MapPanel({ telemetry }: { telemetry: TelemetryResponse |
         </div>
       ) : (
         <div className="text-dim text-xs">
-          No map data yet — mapping requires onboard-autonomy's SLAM/exploration stack
-          to be running and publishing `/map` (see AUTONOMY_ROADMAP.md Phase 4/5).
+          No map data yet — start the Jetson with start_jetson.sh --map (LiDAR + Cartographer SLAM);
+          the map then arrives over the radio and grows as the LiDAR moves.
         </div>
       )}
     </Panel>

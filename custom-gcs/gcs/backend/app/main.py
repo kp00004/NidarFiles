@@ -83,6 +83,7 @@ from .ros_client import (
     PLANNED_PATH_TOPIC,
     POSE_TOPIC,
     SIMULATION_COVERAGE_GRID_TOPIC,
+    SLAM_POSE_TOPIC,
     SIMULATION_MAP_TOPIC,
     SIMULATION_MISSION_STATE_TOPIC,
     SIMULATION_PLANNED_PATH_TOPIC,
@@ -349,11 +350,17 @@ def create_app(
         if msg is None:
             return MapResponse()
         info = msg.get("info", {})
+        origin = (info.get("origin") or {}).get("position") or {}
+        robot = ros_client.latest(SLAM_POSE_TOPIC)
         return MapResponse(
             resolution=info.get("resolution"),
             width=info.get("width"),
             height=info.get("height"),
             data=msg.get("data"),
+            origin_x=origin.get("x"),
+            origin_y=origin.get("y"),
+            robot=robot,
+            age_s=msg.get("age_s"),
         )
 
     @app.get("/api/coverage", response_model=CoverageResponse, tags=["map"])

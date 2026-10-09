@@ -27,6 +27,9 @@ Parameters:
                        0 disables telemetry (commands and heartbeat only)
   lidar_rate_hz        LiDAR scans (/scan) relayed over the radio per second as
                        72-sector OBSTACLE_DISTANCE (default 1.0; 0 = off)
+  map_rate_hz          SLAM map packets (TUNNEL, <= ~145 B) per second while
+                       Cartographer publishes /map (default 2.0; 0 = off)
+  map_cell_m           map cell size sent to the GCS (default 0.25 m)
   allow_param_write    true = the GCS Setup page may WRITE Pixhawk parameters
                        (bench only, `start_jetson.sh --setup`; refused while
                        armed or a mission runs). Reads are always answered.
@@ -35,6 +38,7 @@ Parameters:
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -43,16 +47,19 @@ from typing import Optional
 import rclpy
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from mavros_msgs.msg import State, StatusText
+from nav_msgs.msg import OccupancyGrid
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 from sensor_msgs.msg import BatteryState, Imu, LaserScan
 from std_msgs.msg import String
 
 from .param_bridge_logic import addressed_to_jetson, refusal, typed_value
 from .radio_command_logic import CommandGate, Decision, Readiness
-from .radio_telemetry import DEFAULT_LIDAR_RATE_HZ, DEFAULT_RATE_HZ, TelemetryRelay
+from .map_grid import coarsen
+from .radio_telemetry import DEFAULT_LIDAR_RATE_HZ, DEFAULT_MAP_RATE_HZ, DEFAULT_RATE_HZ, TelemetryRelay
 from .rplidar_protocol import sectors_from_laserscan
 from .telem_command_codec import (
     JETSON_COMPONENT_ID,
@@ -85,6 +92,7 @@ from .topics import (
     IMU_TOPIC,
     LOCAL_POSITION_TOPIC,
     LOCAL_VELOCITY_TOPIC,
+    MAP_TOPIC,
     MISSION_SELECT_TOPIC,
     MOTOR_TEST_STATUS_TOPIC,
     RADIO_STATUS_TOPIC,
@@ -132,6 +140,9 @@ class RadioCommandNode(Node):
         )
         self._allow_param_write = bool(self.declare_parameter("allow_param_write", False).value)
         self._lidar_rate_hz = float(self.declare_parameter("lidar_rate_hz", DEFAULT_LIDAR_RATE_HZ).value)
+        self._map_rate_hz = float(self.declare_parameter("map_rate_hz", DEFAULT_MAP_RATE_HZ).value)
+        self._map_cell_m = float(self.declare_parameter("map_cell_m", 0.25).value)
+        self._map_processed_at: Optional[float] = None
         self._param_text_id = 0
 
         self._gate = CommandGate()
@@ -152,7 +163,18 @@ class RadioCommandNode(Node):
         self._active_mission = "hover"
         self._last_rx_at: Optional[float] = None
         self._last_command: Optional[dict] = None
-        self._telemetry = TelemetryRelay(self._next_seq, time.monotonic(), self._lidar_rate_hz)
+        self._telemetry = TelemetryRelay(
+            self._next_seq, time.monotonic(), self._lidar_rate_hz, self._map_rate_hz
+        )
+        # SLAM pose of the LiDAR = TF map -> laser (Cartographer), if running.
+        self._tf_buffer = None
+        try:
+            from tf2_ros import Buffer, TransformListener
+
+            self._tf_buffer = Buffer()
+            self._tf_listener = TransformListener(self._tf_buffer, self)
+        except Exception as exc:  # noqa: BLE001 -- tf2_ros missing: map without pose
+            self.get_logger().warning(f"[{_now()}] no TF ({exc!r}) -- SLAM pose not sent")
 
         self._command_pub = self.create_publisher(String, COMMAND_TOPIC, 10)
         self._select_pub = self.create_publisher(String, MISSION_SELECT_TOPIC, 10)
@@ -172,6 +194,11 @@ class RadioCommandNode(Node):
         self.create_subscription(Imu, IMU_TOPIC, self._on_imu, best_effort)
         self.create_subscription(StatusText, FCU_STATUSTEXT_TOPIC, self._on_statustext, best_effort)
         self.create_subscription(LaserScan, SCAN_TOPIC, self._on_scan, best_effort)
+        # BEST_EFFORT + VOLATILE subscribes to any /map publisher QoS.
+        map_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE, depth=1
+        )
+        self.create_subscription(OccupancyGrid, MAP_TOPIC, self._on_map, map_qos)
 
         self.create_timer(1.0, self._send_heartbeat_and_status)
         if self._telemetry_rate_hz > 0:
@@ -230,6 +257,31 @@ class RadioCommandNode(Node):
         )
         self._telemetry.update_scan(
             time.monotonic(), sectors, int(msg.range_min * 100), int(msg.range_max * 100)
+        )
+
+    def _on_map(self, msg: OccupancyGrid) -> None:
+        now = time.monotonic()
+        if self._map_rate_hz <= 0 or (self._map_processed_at is not None and now - self._map_processed_at < 1.0):
+            return  # at most one reduction per second
+        self._map_processed_at = now
+        info = msg.info
+        meta, cells = coarsen(
+            msg.data, info.width, info.height, info.resolution,
+            info.origin.position.x, info.origin.position.y, self._map_cell_m,
+        )
+        self._telemetry.update_map(now, meta, cells)
+
+    def _update_slam_pose(self) -> None:
+        if self._tf_buffer is None:
+            return
+        try:
+            t = self._tf_buffer.lookup_transform("map", "laser", Time())
+        except Exception:  # noqa: BLE001 -- no SLAM running / not yet
+            return
+        q = t.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self._telemetry.update_slam_pose(
+            time.monotonic(), t.transform.translation.x, t.transform.translation.y, yaw
         )
 
     def _on_statustext(self, msg: StatusText) -> None:
@@ -498,6 +550,7 @@ class RadioCommandNode(Node):
     def _send_telemetry(self) -> None:
         if self._serial is None:
             return
+        self._update_slam_pose()
         for frame in self._telemetry.tick(time.monotonic()):
             self._write(frame)
 

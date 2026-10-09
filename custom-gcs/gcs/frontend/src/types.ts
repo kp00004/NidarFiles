@@ -145,6 +145,12 @@ export interface MapResponse {
   width: number | null;
   height: number | null;
   data: number[] | null;
+  // Radio SLAM map only (start_jetson.sh --map): map-frame origin of cell
+  // (0,0), the LiDAR/drone pose from SLAM, and how old the map is.
+  origin_x?: number | null;
+  origin_y?: number | null;
+  robot?: { x: number; y: number; yaw_deg: number } | null;
+  age_s?: number | null;
 }
 
 // Same shape as MapResponse -- the coverage grid is also a

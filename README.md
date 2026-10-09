@@ -333,6 +333,32 @@ it must appear at the top of the panel; if it appears at the right, set 270
 (…at the bottom 180, at the left 90). If no LiDAR answers, the stack starts
 without it (`WARNING: no RPLIDAR answered`).
 
+### 7.4 Live map (Cartographer SLAM, over the radio)
+
+```bash
+~/NidarFiles/scripts/jetson/start_jetson.sh --no-fcu --map --dry-run   # hand-held, no Pixhawk
+~/NidarFiles/scripts/jetson/start_jetson.sh --map                      # on the drone
+```
+
+`--map` runs the LiDAR (`--lidar` is implied) and **Cartographer** 2D SLAM
+(LiDAR only — no Pixhawk, IMU or odometry needed). Cartographer builds the
+map and works out where the LiDAR is; the Jetson shrinks the map to
+**0.25 m cells** (wall / free / unknown) and sends only changed rows over the
+radio (~100–300 B/s), plus the LiDAR's position and heading. The GCS **Map**
+panel shows it, north up, with a blue dot + heading line for the LiDAR,
+"updated … s ago" and the position in metres.
+
+Hand-held mapping: carry the LiDAR, Jetson and its radio together (battery
+/ power bank), **keep the LiDAR level**, walk slowly (~0.5 m/s), turn
+slowly. Rooms with furniture, corners and doorways map best; long plain
+corridors and glass are hard. The map starts where the LiDAR is switched on
+(that spot is 0,0).
+
+Needs Cartographer once: `setup_jetson.sh` installs
+`ros-humble-cartographer-ros` (internet). Settings: `NIDAR_MAP_RATE_HZ`
+(map packets per second, default 2), `NIDAR_MAP_CELL_M` (default 0.25; the
+competition grid is 1 m). Cartographer's log: `cartographer.log`.
+
 ## 8. Setup tab (Pixhawk parameters)
 
 For bench work only — **never during a mission**. Start both sides in setup mode:

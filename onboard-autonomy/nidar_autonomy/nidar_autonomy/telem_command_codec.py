@@ -39,6 +39,8 @@ path). Sent by the Jetson, see radio_telemetry.py:
     OBSTACLE_DISTANCE    LiDAR (RPLIDAR A2): 72 sectors x 5 deg, nearest
                          return in cm, clockwise from the nose (BODY_FRD);
                          only while lidar_node publishes /scan
+    TUNNEL               SLAM map rows / SLAM pose (map_grid.py), only while
+                         Cartographer publishes /map
   from 1/1 (the Pixhawk's state as MAVROS reports it, relayed -- the
   Pixhawk itself is still not on the radio)
     HEARTBEAT            armed / guided (base_mode), ArduCopter mode number
@@ -84,6 +86,7 @@ MSG_ID_COMMAND_ACK = 77
 MSG_ID_NAMED_VALUE_FLOAT = 251
 MSG_ID_STATUSTEXT = 253
 MSG_ID_OBSTACLE_DISTANCE = 330
+MSG_ID_TUNNEL = 385
 CRC_EXTRA = {
     MSG_ID_HEARTBEAT: 50,
     MSG_ID_SYS_STATUS: 124,
@@ -97,6 +100,7 @@ CRC_EXTRA = {
     MSG_ID_NAMED_VALUE_FLOAT: 170,
     MSG_ID_STATUSTEXT: 83,
     MSG_ID_OBSTACLE_DISTANCE: 23,
+    MSG_ID_TUNNEL: 147,
 }
 
 MAV_CMD_USER_1 = 31010
@@ -215,6 +219,7 @@ _STATUSTEXT_FMT = "<B50sHB"  # severity, text, id, chunk_seq
 # time_usec, distances[72], min_distance, max_distance, sensor_type, increment,
 # increment_f, angle_offset, frame
 _OBSTACLE_DISTANCE_FMT = "<Q72HHHBBffB"
+_TUNNEL_FMT = "<HBBB128s"  # payload_type, target_system, target_component, payload_length, payload
 MAV_DISTANCE_SENSOR_LASER = 0
 MAV_FRAME_BODY_FRD = 12
 _PARAM_REQUEST_READ_FMT = "<hBB16s"  # param_index, target_system, target_component, param_id
@@ -684,3 +689,21 @@ def encode_obstacle_distance(
         int(round(increment_deg)) & 0xFF, float(increment_deg), float(angle_offset_deg), MAV_FRAME_BODY_FRD,
     )
     return encode_frame(MSG_ID_OBSTACLE_DISTANCE, payload, seq, sysid, compid)
+
+
+
+def encode_tunnel(
+    payload_type: int,
+    payload: bytes,
+    seq: int,
+    target_system: int = GCS_SYSTEM_ID,
+    target_component: int = GCS_COMPONENT_ID,
+    sysid: int = JETSON_SYSTEM_ID,
+    compid: int = JETSON_COMPONENT_ID,
+) -> bytes:
+    """MAVLink TUNNEL (up to 128 bytes of payload). MAVLink2 trailing-zero
+    truncation keeps a short payload short on the radio."""
+    if len(payload) > 128:
+        raise ValueError("TUNNEL payload is at most 128 bytes")
+    body = struct.pack(_TUNNEL_FMT, payload_type, target_system, target_component, len(payload), payload)
+    return encode_frame(MSG_ID_TUNNEL, body, seq, sysid, compid)

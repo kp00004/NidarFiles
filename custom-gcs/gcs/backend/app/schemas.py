@@ -155,11 +155,26 @@ class TelemetryResponse(BaseModel):
     navigation: NavigationResponse = NavigationResponse()
 
 
+class RobotPoseResponse(BaseModel):
+    """Position in the map frame (metres) and heading (degrees,
+    counter-clockwise from +x) -- from SLAM over the radio."""
+
+    x: float
+    y: float
+    yaw_deg: float
+
+
 class MapResponse(BaseModel):
     resolution: float | None = None
     width: int | None = None
     height: int | None = None
     data: list[int] | None = None
+    # Where cell (0,0)'s corner is in the map frame (metres), and the SLAM
+    # pose of the LiDAR/drone -- only with the radio SLAM map (start_jetson.sh --map).
+    origin_x: float | None = None
+    origin_y: float | None = None
+    robot: RobotPoseResponse | None = None
+    age_s: float | None = None
 
 
 class CoverageResponse(BaseModel):

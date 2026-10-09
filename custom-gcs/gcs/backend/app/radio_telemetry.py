@@ -28,6 +28,7 @@ anything -- START/ABORT go through RadioLink.send_command().
 from __future__ import annotations
 
 import math
+import struct
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -41,8 +42,10 @@ from .radio_protocol import (
     MAV_MODE_FLAG_GUIDED_ENABLED,
     MAV_MODE_FLAG_SAFETY_ARMED,
     MISSION_NAMES_BY_CODE,
+    MAP_ROWS_TYPE,
     MISSION_STATE_NAMES,
     PARAM_TEXT_PREFIX,
+    SLAM_POSE_TYPE,
     STATUSTEXT_CHUNK_LEN,
 )
 from .ros_client import (
@@ -52,7 +55,9 @@ from .ros_client import (
     HEARTBEAT_TOPIC,
     IMU_TOPIC,
     LIDAR_TOPIC,
+    MAP_TOPIC,
     POSE_TOPIC,
+    SLAM_POSE_TOPIC,
     VALID_COMMANDS,
     VALID_SIMULATION_COMMANDS,
     VELOCITY_TOPIC,
@@ -67,6 +72,11 @@ HOVER_VALUES_STALE_S = 3.0
 # The Jetson resends the mission detail every 5 s while there is one.
 MISSION_DETAIL_STALE_S = 12.0
 LIDAR_STALE_S = 5.0
+SLAM_POSE_STALE_S = 3.0
+# OccupancyGrid values the Map panel already draws
+_GRID_VALUE = {0: -1, 1: 0, 2: 100}
+_MAP_HEADER = struct.Struct("<HhhBBBB")
+_POSE = struct.Struct("<hhh")
 _UNKNOWN_CM = 0xFFFF
 STATUSTEXT_HISTORY = 20
 _PARTIAL_TEXT_TIMEOUT_S = 5.0
@@ -122,6 +132,8 @@ class RadioTelemetryClient:
         self._hover: dict[str, tuple[float, float]] = {}  # field -> (value, received at)
         self._statustext_history: list[dict] = []
         self._texts = TextAssembler()
+        self._map_meta: Optional[tuple] = None  # (cell_cm, origin_x_cm, origin_y_cm, width, height)
+        self._map_cells: list[int] = []
         self._mission_id: Optional[str] = None  # from the Jetson heartbeat
 
     # -- input (RadioLink reader thread) -------------------------------------------
@@ -135,6 +147,13 @@ class RadioTelemetryClient:
                 if kind == "HEARTBEAT":
                     self._store("jetson", MISSION_STATE_NAMES.get(msg.custom_mode & 0xFF, "unknown"), now)
                     self._mission_id = MISSION_NAMES_BY_CODE.get((msg.custom_mode >> 8) & 0xFF)
+                elif kind == "TUNNEL" and msg.payload_type in (MAP_ROWS_TYPE, SLAM_POSE_TYPE):
+                    payload = bytes(msg.payload[: msg.payload_length])
+                    if msg.payload_type == MAP_ROWS_TYPE:
+                        self._apply_map_rows(payload, now)
+                    elif len(payload) >= _POSE.size:
+                        x, y, yaw = _POSE.unpack_from(payload)
+                        self._store("slam_pose", {"x": x / 100.0, "y": y / 100.0, "yaw_deg": yaw / 100.0}, now)
                 elif kind == "OBSTACLE_DISTANCE":
                     increment = msg.increment_f if msg.increment_f > 0 else float(msg.increment)
                     self._store("lidar", {
@@ -192,6 +211,25 @@ class RadioTelemetryClient:
         self._statustext_history.append({"severity": 4 if warning else 6, "text": f"{name}: {text}"})
         del self._statustext_history[:-STATUSTEXT_HISTORY]
 
+    def _apply_map_rows(self, payload: bytes, now: float) -> None:
+        """Write received rows into the map; a new geometry (size, origin,
+        cell size) starts a fresh, all-unknown map."""
+        if len(payload) < _MAP_HEADER.size:
+            return
+        cell_cm, ox, oy, w, h, row0, nrows = _MAP_HEADER.unpack_from(payload)
+        body = payload[_MAP_HEADER.size :]
+        count = w * nrows
+        if w == 0 or h == 0 or row0 + nrows > h or len(body) < (count + 3) // 4:
+            return
+        meta = (cell_cm, ox, oy, w, h)
+        if self._map_meta != meta:
+            self._map_meta = meta
+            self._map_cells = [-1] * (w * h)
+        base = row0 * w
+        for i in range(count):
+            self._map_cells[base + i] = _GRID_VALUE.get((body[i >> 2] >> ((i & 3) * 2)) & 0x3, -1)
+        self._at["map"] = now
+
     def _store(self, key: str, value: Any, now: float) -> None:
         self._values[key] = value
         self._at[key] = now
@@ -235,6 +273,22 @@ class RadioTelemetryClient:
                 return None if orientation is None else {"orientation": orientation}
             if topic == FLIGHT_TEST_STATUS_TOPIC:
                 return self._hover_status()
+            if topic == MAP_TOPIC:
+                if self._map_meta is None:
+                    return None
+                cell_cm, ox, oy, w, h = self._map_meta
+                return {
+                    "info": {
+                        "resolution": cell_cm / 100.0,
+                        "width": w,
+                        "height": h,
+                        "origin": {"position": {"x": ox / 100.0, "y": oy / 100.0}},
+                    },
+                    "data": list(self._map_cells),
+                    "age_s": round(self._clock() - self._at["map"], 1),
+                }
+            if topic == SLAM_POSE_TOPIC:
+                return self._fresh("slam_pose", SLAM_POSE_STALE_S)
             if topic == LIDAR_TOPIC:
                 scan = self._fresh("lidar", LIDAR_STALE_S)
                 return None if scan is None else {**scan, "age_s": round(self._clock() - self._at["lidar"], 1)}

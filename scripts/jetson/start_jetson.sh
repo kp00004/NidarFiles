@@ -18,6 +18,9 @@
 #   start_jetson.sh            full stack (a radio START will fly the hover)
 #   start_jetson.sh --no-fcu   no Pixhawk connected: skip the Pixhawk/MAVROS
 #                              checks; radio link (+ LiDAR) only, START refused
+#   start_jetson.sh --map      LiDAR + Cartographer 2D SLAM: live map (and the
+#                              LiDAR's position on it) to the GCS Map panel;
+#                              implies --lidar. Works hand-held with --no-fcu.
 #   start_jetson.sh --lidar    also run the RPLIDAR A2 and send its scan to the
 #                              GCS over the radio (LiDAR panel)
 #   start_jetson.sh --setup    also let the GCS Setup page write Pixhawk
@@ -48,18 +51,23 @@ TELEMETRY_RATE_HZ="${NIDAR_TELEMETRY_RATE_HZ:-2.0}"
 # direction of the LiDAR's 0 deg mark relative to the drone's nose (clockwise).
 LIDAR_RATE_HZ="${NIDAR_LIDAR_RATE_HZ:-1.0}"
 LIDAR_YAW_DEG="${NIDAR_LIDAR_YAW_DEG:-0}"
+# Map (--map): packets per second (~145 B each) and the cell size sent to the GCS.
+MAP_RATE_HZ="${NIDAR_MAP_RATE_HZ:-2.0}"
+MAP_CELL_M="${NIDAR_MAP_CELL_M:-0.25}"
 
 DRY_RUN=false
 SETUP=false
 LIDAR=false
 NO_FCU=false
+MAP=false
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
     --setup) SETUP=true ;;
     --lidar) LIDAR=true ;;
     --no-fcu) NO_FCU=true ;;
-    *) echo "unknown option: $arg (use --dry-run, --setup, --lidar, --no-fcu)"; exit 1 ;;
+    --map) MAP=true; LIDAR=true ;;
+    *) echo "unknown option: $arg (use --dry-run, --setup, --lidar, --map, --no-fcu)"; exit 1 ;;
   esac
 done
 
@@ -83,6 +91,8 @@ ros_double() {
 TELEMETRY_RATE_HZ="$(ros_double "$TELEMETRY_RATE_HZ")" || fail "NIDAR_TELEMETRY_RATE_HZ must be a number (e.g. 2 or 2.0)"
 LIDAR_RATE_HZ="$(ros_double "$LIDAR_RATE_HZ")" || fail "NIDAR_LIDAR_RATE_HZ must be a number (e.g. 1 or 0.5)"
 LIDAR_YAW_DEG="$(ros_double "$LIDAR_YAW_DEG")" || fail "NIDAR_LIDAR_YAW_DEG must be a number of degrees (e.g. 0, 90, 180, 270)"
+MAP_RATE_HZ="$(ros_double "$MAP_RATE_HZ")" || fail "NIDAR_MAP_RATE_HZ must be a number (e.g. 2 or 1.0)"
+MAP_CELL_M="$(ros_double "$MAP_CELL_M")" || fail "NIDAR_MAP_CELL_M must be a number of metres (e.g. 0.25)"
 
 cleanup() {
   say "stopping ${#PIDS[@]} processes"
@@ -187,12 +197,33 @@ run command_node ros2 run nidar_autonomy command_node
 run heartbeat_node ros2 run nidar_autonomy heartbeat_node
 run radio_command_node ros2 run nidar_autonomy radio_command_node --ros-args \
   -p "serial_port:=$RADIO_PORT" -p "fallback_serial_port:=$RADIO_FALLBACK_PORT" \
-  -p "baud:=$RADIO_BAUD" -p "dry_run:=$DRY_RUN" -p "telemetry_rate_hz:=$TELEMETRY_RATE_HZ"   -p "allow_param_write:=$SETUP" -p "lidar_rate_hz:=$LIDAR_RATE_HZ"
+  -p "baud:=$RADIO_BAUD" -p "dry_run:=$DRY_RUN" -p "telemetry_rate_hz:=$TELEMETRY_RATE_HZ"   -p "allow_param_write:=$SETUP" -p "lidar_rate_hz:=$LIDAR_RATE_HZ" \
+  -p "map_rate_hz:=$MAP_RATE_HZ" -p "map_cell_m:=$MAP_CELL_M"
 run hover_mission python3 "$NIDAR_DIR/missions/hover/mission.py"
 run motor_test_mission python3 "$NIDAR_DIR/missions/motor_test/mission.py"
 if $LIDAR; then
   run lidar_node ros2 run nidar_autonomy lidar_node --ros-args \
     -p "serial_port:=$LIDAR_PORT" -p "baud:=$LIDAR_BAUD" -p "yaw_offset_deg:=$LIDAR_YAW_DEG"
+fi
+if $MAP && ! $LIDAR; then
+  say "WARNING: --map without a LiDAR -- no map"
+elif $MAP; then
+  # Cartographer 2D SLAM from /scan (LiDAR only). Our config includes
+  # Cartographer's own hand-held example, copied from the installed package.
+  CARTO_SHARE="$(ros2 pkg prefix cartographer_ros 2>/dev/null)/share/cartographer_ros/configuration_files"
+  if [ ! -f "$CARTO_SHARE/revo_lds.lua" ]; then
+    say "WARNING: Cartographer not installed -- no map (run setup_jetson.sh with internet)"
+    MAP=false
+  else
+    CARTO_DIR="$LOG_DIR/cartographer"
+    mkdir -p "$CARTO_DIR"
+    cp "$CARTO_SHARE/revo_lds.lua" "$NIDAR_DIR/scripts/jetson/cartographer/nidar_2d.lua" "$CARTO_DIR/"
+    run cartographer ros2 run cartographer_ros cartographer_node \
+      -configuration_directory "$CARTO_DIR" -configuration_basename nidar_2d.lua
+    run cartographer_grid ros2 run cartographer_ros cartographer_occupancy_grid_node \
+      -resolution 0.1 -publish_period_sec 1.0
+    say "MAP: Cartographer SLAM running -> /map -> GCS Map panel (${MAP_CELL_M} m cells)"
+  fi
 fi
 
 say "-------------------------------------------------------------------"
@@ -209,6 +240,7 @@ say "Ctrl+C stops everything. Following radio + mission logs:"
 say "-------------------------------------------------------------------"
 LOGS=("$LOG_DIR/radio_command_node.log" "$LOG_DIR/hover_mission.log" "$LOG_DIR/motor_test_mission.log")
 $LIDAR && LOGS+=("$LOG_DIR/lidar_node.log")
+$MAP && LOGS+=("$LOG_DIR/cartographer.log")
 tail -n +1 -F "${LOGS[@]}" &
 PIDS+=($!)
 wait

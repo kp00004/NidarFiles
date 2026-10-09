@@ -51,6 +51,15 @@ else
   sudo apt-get install -y "${MISSING[@]}"
 fi
 
+echo "== optional: Cartographer (2D SLAM map for start_jetson.sh --map)"
+if dpkg -s ros-humble-cartographer-ros >/dev/null 2>&1; then
+  echo "   installed"
+elif sudo apt-get install -y ros-humble-cartographer-ros; then
+  echo "   installed now"
+else
+  echo "   WARNING: could not install ros-humble-cartographer-ros (no internet?) -- --map won't work until it is"
+fi
+
 echo "== serial permissions"
 if id -nG "$USER" | grep -qw dialout; then
   echo "   $USER is already in dialout"

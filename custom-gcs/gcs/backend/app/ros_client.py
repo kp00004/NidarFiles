@@ -97,6 +97,8 @@ FCU_STATE_TOPIC = "/mavros/state"
 # LiDAR scan reduced to 72 sectors -- only over the radio (app/radio_telemetry.py,
 # from the Jetson's OBSTACLE_DISTANCE); rosbridge has no such topic.
 LIDAR_TOPIC = "/lidar/sectors"
+# SLAM pose of the LiDAR in the map frame -- radio only (TUNNEL SLAM_POSE).
+SLAM_POSE_TOPIC = "/slam/pose"
 STATUSTEXT_TOPIC = "/mavros/statustext/recv"
 VELOCITY_TOPIC = "/mavros/local_position/velocity_local"
 GPS_TOPIC = "/mavros/global_position/global"

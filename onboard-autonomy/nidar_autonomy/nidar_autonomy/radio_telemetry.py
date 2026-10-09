@@ -26,6 +26,7 @@ import math
 from collections import deque
 from typing import Callable, Deque, List, Optional, Tuple
 
+from .map_grid import SLAM_POSE_TYPE, MAP_ROWS_TYPE, GridMeta, MapSender, encode_pose
 from .telem_command_codec import (
     FCU_RELAY_COMPONENT_ID,
     HOVER_VALUE_NAMES,
@@ -36,6 +37,7 @@ from .telem_command_codec import (
     encode_local_position,
     encode_named_value_float,
     encode_obstacle_distance,
+    encode_tunnel,
     encode_statustext,
     encode_sys_status,
     statustext_chunks,
@@ -55,6 +57,12 @@ MISSION_STATUS_STALE_S = 3.0
 DEFAULT_LIDAR_RATE_HZ = 1.0
 SCAN_STALE_S = 1.0
 LIDAR_SECTOR_DEG = 5.0
+
+# SLAM map: one MAP_ROWS TUNNEL (<= ~145 B) per period while /map is fresh;
+# the SLAM pose (~25 B) every tick while fresh.
+DEFAULT_MAP_RATE_HZ = 2.0
+MAP_STALE_S = 5.0
+SLAM_POSE_STALE_S = 1.0
 
 STATUSTEXT_PER_TICK = 2
 STATUSTEXT_QUEUE = 20
@@ -86,7 +94,11 @@ class Schedule:
 
 class TelemetryRelay:
     def __init__(
-        self, next_seq: Callable[[], int], start_time: float, lidar_rate_hz: float = DEFAULT_LIDAR_RATE_HZ
+        self,
+        next_seq: Callable[[], int],
+        start_time: float,
+        lidar_rate_hz: float = DEFAULT_LIDAR_RATE_HZ,
+        map_rate_hz: float = DEFAULT_MAP_RATE_HZ,
     ) -> None:
         self._next_seq = next_seq
         self._start = start_time
@@ -94,6 +106,11 @@ class TelemetryRelay:
         self._scan: Optional[Tuple[List[int], int, int]] = None  # sectors, min_cm, max_cm
         self._scan_at: Optional[float] = None
         self._slow_schedule = Schedule(SLOW_PERIOD_S)
+        self._map_schedule = Schedule(1.0 / map_rate_hz) if map_rate_hz > 0 else None
+        self._map = MapSender()
+        self._map_at: Optional[float] = None
+        self._slam_pose: Optional[Tuple[float, float, float]] = None
+        self._slam_pose_at: Optional[float] = None
 
         self._fcu: Optional[Tuple[bool, bool, bool, Optional[str], int]] = None
         self._fcu_at: Optional[float] = None
@@ -154,6 +171,14 @@ class TelemetryRelay:
         self._scan = (list(sectors_cm), int(min_cm), int(max_cm))
         self._scan_at = now
 
+    def update_map(self, now: float, meta: GridMeta, cells: bytearray) -> None:
+        self._map.update(meta, cells)
+        self._map_at = now
+
+    def update_slam_pose(self, now: float, x_m: float, y_m: float, yaw_rad: float) -> None:
+        self._slam_pose = (x_m, y_m, yaw_rad)
+        self._slam_pose_at = now
+
     def add_fcu_statustext(self, severity: int, text: str) -> None:
         if text:
             self._texts.append((int(severity), text, FCU_RELAY_COMPONENT_ID))
@@ -184,6 +209,17 @@ class TelemetryRelay:
                     int((now - self._start) * 1e6), sectors, min_cm, max_cm, LIDAR_SECTOR_DEG, self._next_seq()
                 )
             )
+
+        if self._fresh(self._slam_pose_at, now, SLAM_POSE_STALE_S):
+            frames.append(encode_tunnel(SLAM_POSE_TYPE, encode_pose(*self._slam_pose), self._next_seq()))
+        if (
+            self._map_schedule is not None
+            and self._fresh(self._map_at, now, MAP_STALE_S)
+            and self._map_schedule.due(now)
+        ):
+            payload = self._map.next_payload(now)
+            if payload is not None:
+                frames.append(encode_tunnel(MAP_ROWS_TYPE, payload, self._next_seq()))
 
         self._queue_mission_detail(now)
         frames.extend(self._statustext_frames())

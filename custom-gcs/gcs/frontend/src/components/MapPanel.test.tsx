@@ -75,3 +75,18 @@ describe("MapPanel", () => {
     expect(await screen.findByText(/42\.5% searched/)).toBeInTheDocument();
   });
 });
+
+describe("MapPanel with the radio SLAM map", () => {
+  it("shows the SLAM position, heading and age", async () => {
+    vi.spyOn(api, "getMap").mockResolvedValue({
+      resolution: 0.25, width: 4, height: 3, data: [-1, 0, 0, 100, 0, 0, 0, 100, -1, -1, 0, 100],
+      origin_x: -0.5, origin_y: -0.25, robot: { x: 0.12, y: -0.03, yaw_deg: 90 }, age_s: 0.6,
+    });
+    vi.spyOn(api, "getCoverage").mockResolvedValue({ resolution: null, width: null, height: null, data: null });
+    vi.spyOn(api, "getPath").mockResolvedValue({ points: [] });
+    vi.spyOn(api, "getFrontiers").mockResolvedValue({ points: [] });
+    render(<MapPanel telemetry={null} />);
+    expect(await screen.findByText(/position 0\.12, -0\.03 m, heading 90°/)).toBeInTheDocument();
+    expect(screen.getByText(/updated 0\.6 s ago/)).toBeInTheDocument();
+  });
+});

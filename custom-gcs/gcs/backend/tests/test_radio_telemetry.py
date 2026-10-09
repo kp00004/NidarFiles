@@ -418,3 +418,56 @@ def test_api_lidar_unavailable_without_scan():
     app = create_app(client=RadioTelemetryClient(), radio=FakeRadioLink(), settings=Settings())
     with TestClient(app) as client:
         assert client.get("/api/lidar").json()["available"] is False
+
+
+# -- SLAM map (TUNNEL) ---------------------------------------------------------------
+
+import struct  # noqa: E402
+
+
+def map_rows(cell_cm, ox, oy, w, h, row0, cells):
+    nrows = len(cells) // w
+    packed = bytearray((len(cells) + 3) // 4)
+    for i, v in enumerate(cells):
+        packed[i >> 2] |= v << ((i & 3) * 2)
+    payload = struct.pack("<HhhBBBB", cell_cm, ox, oy, w, h, row0, nrows) + bytes(packed)
+    return JETSON, JETSON.tunnel_encode(255, 190, 0x8001, len(payload), list(payload) + [0] * (128 - len(payload)))
+
+
+def slam_pose(x_cm, y_cm, yaw_cdeg):
+    payload = struct.pack("<hhh", x_cm, y_cm, yaw_cdeg)
+    return JETSON, JETSON.tunnel_encode(255, 190, 0x8002, len(payload), list(payload) + [0] * 122)
+
+
+def test_map_rows_build_an_occupancy_grid():
+    client = RadioTelemetryClient(Clock())
+    assert client.latest("/map") is None
+    _feed(client, map_rows(25, -100, -50, 4, 3, 1, [2, 1, 1, 0]))
+    m = client.latest("/map")
+    assert m["info"]["resolution"] == 0.25 and (m["info"]["width"], m["info"]["height"]) == (4, 3)
+    assert m["info"]["origin"]["position"] == {"x": -1.0, "y": -0.5}
+    assert m["data"] == [-1] * 4 + [100, 0, 0, -1] + [-1] * 4
+
+
+def test_new_map_geometry_starts_fresh():
+    client = RadioTelemetryClient(Clock())
+    _feed(client, map_rows(25, 0, 0, 2, 2, 0, [2, 2, 2, 2]))
+    _feed(client, map_rows(25, -25, 0, 3, 2, 0, [1, 1, 1]))
+    assert client.latest("/map")["data"] == [0, 0, 0, -1, -1, -1]
+
+
+def test_slam_pose_and_api_map():
+    telemetry = RadioTelemetryClient()
+    _feed(telemetry, map_rows(25, 0, 0, 2, 1, 0, [1, 2]), slam_pose(123, -45, 9000))
+    assert telemetry.latest("/slam/pose") == {"x": 1.23, "y": -0.45, "yaw_deg": 90.0}
+    app = create_app(client=telemetry, radio=FakeRadioLink(), settings=Settings())
+    with TestClient(app) as client:
+        body = client.get("/api/map").json()
+    assert body["data"] == [0, 100] and body["origin_x"] == 0.0
+    assert body["robot"] == {"x": 1.23, "y": -0.45, "yaw_deg": 90.0}
+
+
+def test_corrupt_map_rows_are_ignored():
+    client = RadioTelemetryClient(Clock())
+    _feed(client, map_rows(25, 0, 0, 4, 1, 1, [1, 1, 1, 1]))  # row 1 of a 1-row map: out of range
+    assert client.latest("/map") is None
