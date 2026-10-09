@@ -151,6 +151,17 @@ if $LIDAR || [ "$USB_SERIAL_COUNT" -gt 1 ]; then
   fi
 fi
 
+# -- an earlier stack still running? -----------------------------------------------
+# Leftovers hold the radio/LiDAR ports (the probe then reports "no RPLIDAR
+# answered") and a second radio_command_node would fight over the radio.
+# MAVROS is not in this list: it is reused on purpose.
+OURS='lib/nidar_autonomy/(radio_command_node|lidar_node|command_node|heartbeat_node)|missions/(hover|motor_test)/mission\.py|cartographer_(node|occupancy_grid_node)'
+if pgrep -f "$OURS" >/dev/null; then
+  say "STOP: parts of an earlier stack are still running:"
+  pgrep -af "$OURS" | sed 's/^/    /'
+  fail "stop them first:  pkill -INT -f '$OURS'   (then run this again)"
+fi
+
 # -- safety: one authoritative execution path ----------------------------------
 if pgrep -f "nidar_autonomy/mission_state_node|lib/nidar_autonomy/mission_state_node" >/dev/null; then
   fail "mission_state_node is running -- it would arm on START by itself. Stop it first."
@@ -207,6 +218,7 @@ if $LIDAR; then
 fi
 if $MAP && ! $LIDAR; then
   say "WARNING: --map without a LiDAR -- no map"
+  MAP=false
 elif $MAP; then
   # Cartographer 2D SLAM from /scan (LiDAR only). Our config includes
   # Cartographer's own hand-held example, copied from the installed package.

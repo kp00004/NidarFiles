@@ -345,6 +345,8 @@ class RadioCommandNode(Node):
             try:
                 data = self._serial.read(256)
             except Exception as exc:  # noqa: BLE001 -- unplugged / I/O error
+                if self._stop.is_set():
+                    break  # shutting down: the port was closed under us
                 self._close(repr(exc))
                 continue
             if not data:
@@ -555,7 +557,11 @@ class RadioCommandNode(Node):
             self._write(frame)
 
     def destroy_node(self) -> bool:
+        # Stop the reader thread BEFORE closing its port: closing a port a
+        # thread is blocked reading made pyserial raise a TypeError on every
+        # shutdown (reported on the Jetson). Same order as lidar_node.
         self._stop.set()
+        self._reader.join(timeout=1.0)
         self._close("node shutdown")
         return super().destroy_node()
 
