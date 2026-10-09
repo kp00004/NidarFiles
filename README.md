@@ -475,6 +475,7 @@ Run the tests (laptop, from the repo root; backend venv created by the GCS start
 | Jetson code | `cd onboard-autonomy\nidar_autonomy; ..\..\custom-gcs\gcs\backend\.venv\Scripts\python.exe -m pytest test -q` | `cd onboard-autonomy/nidar_autonomy && ../../custom-gcs/gcs/backend/.venv/bin/python -m pytest test -q` |
 | GCS backend | `cd custom-gcs\gcs\backend; .venv\Scripts\python.exe -m pytest -q` | `cd custom-gcs/gcs/backend && .venv/bin/python -m pytest -q` |
 | GCS panel | `cd custom-gcs\gcs\frontend; npx tsc --noEmit; npx vitest run` | same |
+| Jetson start script (float parameters) | `custom-gcs\gcs\backend\.venv\Scripts\python.exe -m pytest scripts -q` (needs Git Bash) | `custom-gcs/gcs/backend/.venv/bin/python -m pytest scripts -q` |
 
 ## 15. Test status
 
