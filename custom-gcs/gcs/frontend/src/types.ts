@@ -357,3 +357,15 @@ export interface ParamResponse {
   value: number;
   attempts: number;
 }
+
+// Live LiDAR sectors (radio OBSTACLE_DISTANCE from the Jetson). Angles
+// clockwise from the nose; null = no return in that sector.
+export interface LidarResponse {
+  available: boolean;
+  age_s: number | null;
+  angle_offset_deg: number;
+  increment_deg: number;
+  min_cm: number | null;
+  max_cm: number | null;
+  distances_cm: (number | null)[];
+}

@@ -378,3 +378,43 @@ def test_motor_test_status_from_radio():
     status = client.latest("/flight_test/status")
     assert (status["scenario"], status["state"]) == ("motor_test", "testing")
     assert status["detail"] == "motor B (2/4) at 8% for 5 s"
+
+
+# -- LiDAR ------------------------------------------------------------------------
+
+
+def lidar_scan(distances):
+    return JETSON, JETSON.obstacle_distance_encode(0, 0, distances, 5, 15, 1200, 5.0, 0.0, 12)
+
+
+def test_lidar_scan_from_radio():
+    clock = Clock()
+    client = RadioTelemetryClient(clock)
+    assert client.latest("/lidar/sectors") is None
+    distances = [65535] * 72
+    distances[0], distances[18] = 120, 340
+    _feed(client, lidar_scan(distances))
+    clock.t += 0.5
+    scan = client.latest("/lidar/sectors")
+    assert scan["distances_cm"][0] == 120 and scan["distances_cm"][18] == 340
+    assert scan["distances_cm"][1] is None
+    assert (scan["increment_deg"], scan["max_cm"], scan["age_s"]) == (5.0, 1200, 0.5)
+    clock.t += 10
+    assert client.latest("/lidar/sectors") is None  # stale
+
+
+def test_api_lidar():
+    telemetry = RadioTelemetryClient()
+    distances = [65535] * 72
+    distances[36] = 500
+    _feed(telemetry, lidar_scan(distances))
+    app = create_app(client=telemetry, radio=FakeRadioLink(), settings=Settings())
+    with TestClient(app) as client:
+        body = client.get("/api/lidar").json()
+    assert body["available"] is True and body["distances_cm"][36] == 500 and len(body["distances_cm"]) == 72
+
+
+def test_api_lidar_unavailable_without_scan():
+    app = create_app(client=RadioTelemetryClient(), radio=FakeRadioLink(), settings=Settings())
+    with TestClient(app) as client:
+        assert client.get("/api/lidar").json()["available"] is False

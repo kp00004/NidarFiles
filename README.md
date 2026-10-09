@@ -155,6 +155,7 @@ power, address 1000, channel 0 (already set on this pair).
 ~/NidarFiles/scripts/jetson/start_jetson.sh --dry-run   # safe: commands are answered but never executed
 ~/NidarFiles/scripts/jetson/start_jetson.sh             # LIVE: START really runs the mission
 ~/NidarFiles/scripts/jetson/start_jetson.sh --setup     # LIVE + allows parameter writes from the Setup tab
+~/NidarFiles/scripts/jetson/start_jetson.sh --lidar     # also runs the RPLIDAR A2 and shows its scan on the GCS (7.3)
 ```
 
 Options can be combined (`--dry-run --setup`). **Ctrl+C** stops everything.
@@ -301,6 +302,30 @@ isn't pressed, or the RC isn't calibrated. Settings: `CONFIG` in
 The Jetson refuses a START for one mission while the other is running
 (`MISSION_BUSY`).
 
+### 7.3 LiDAR live view (RPLIDAR A2, over the radio)
+
+Not a mission — a live display. Plug the RPLIDAR A2 into a Jetson USB port
+and start with `--lidar` (combine freely, e.g. `--dry-run --lidar`).
+
+- The Jetson finds the LiDAR by asking each USB serial port (the LiDAR's USB
+  adapter and the radio use the same chip, so their Linux names look the
+  same) and gives the radio the other port. It prints
+  `RPLIDAR on /dev/ttyUSBx …` and `radio -> /dev/ttyUSBy`.
+- `lidar_node` publishes the full scan on ROS `/scan` (for SLAM later);
+  the radio carries a **72-sector summary** (nearest obstacle every 5°,
+  ~180 bytes) **once per second**.
+- The GCS **LiDAR** panel shows it as a radar view: drone in the middle,
+  **top = the drone's nose**, range rings, the nearest obstacle in amber.
+
+Settings (environment variables before `start_jetson.sh`):
+`NIDAR_LIDAR_RATE_HZ` (default 1; 2 for a smoother view, if START/ABORT
+answers stay on the 1st attempt), `NIDAR_LIDAR_YAW_DEG` — the direction of
+the LiDAR's 0° mark (its motor/cable side faces backwards on the A2)
+relative to the nose, clockwise. Check it: put a box in front of the drone,
+it must appear at the top of the panel; if it appears at the right, set 270
+(…at the bottom 180, at the left 90). If no LiDAR answers, the stack starts
+without it (`WARNING: no RPLIDAR answered`).
+
 ## 8. Setup tab (Pixhawk parameters)
 
 For bench work only — **never during a mission**. Start both sides in setup mode:
@@ -395,6 +420,9 @@ change the magnetic field — calibrate after assembly, never before).
 | Setup tab: `writes disabled` | Jetson not started with `--setup` |
 | Jetson: `Permission denied` on a script | `chmod +x ~/NidarFiles/scripts/jetson/*.sh` |
 | Jetson: radio permission denied | not in `dialout`: rerun `setup_jetson.sh`, log out/in |
+| `WARNING: no RPLIDAR answered` | LiDAR USB unplugged or no power (it needs USB 5 V; the motor should spin when the stack starts); check `ls /dev/ttyUSB*` shows two ports |
+| LiDAR panel: obstacles in the wrong direction | set `NIDAR_LIDAR_YAW_DEG` (section 7.3) |
+| Radio link drops with `--lidar` | lower `NIDAR_LIDAR_RATE_HZ` (e.g. 0.5) |
 | Windows: script "cannot be loaded … disabled on this system" | use `powershell -ExecutionPolicy Bypass -File …` as shown |
 | `PreArm: RC not calibrated` / `RC not found` / `Throttle below failsafe` | no RC in this setup: `ARMING_CHECK` → untick only "RC Channels"; `FS_THR_ENABLE=0` |
 | `flight_params.py`: `UNKNOWN` items | MAVROS hasn't loaded the parameter list yet — wait ~30 s after `MAVROS connected` and run again |

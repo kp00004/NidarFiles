@@ -278,3 +278,60 @@ def test_load_stays_small_at_default_rate():
                                           "target_altitude_m": 0.5, "duration_s": 10.0, "elapsed_hover_s": 1.0})
         total += sum(len(f) for f in relay.tick(now))
     assert total / 10.0 < 300
+
+
+# -- LiDAR (OBSTACLE_DISTANCE) ------------------------------------------------------
+
+from nidar_autonomy.telem_command_codec import MSG_ID_OBSTACLE_DISTANCE, encode_obstacle_distance  # noqa: E402
+
+SECTORS = [100 + i for i in range(72)]
+
+
+def test_obstacle_distance_parses_in_pymavlink(mav):
+    raw = encode_obstacle_distance(123456, SECTORS, 15, 1200, 5.0, seq=4)
+    msg = _parse(mav, raw)
+    assert list(msg.distances) == SECTORS
+    assert (msg.min_distance, msg.max_distance, msg.increment, msg.increment_f) == (15, 1200, 5, 5.0)
+    assert msg.frame == 12 and msg.sensor_type == 0
+    assert (msg.get_srcSystem(), msg.get_srcComponent()) == (JETSON_SYSTEM_ID, JETSON_COMPONENT_ID)
+    assert len(raw) < 190
+
+
+def test_obstacle_distance_unknown_sectors_survive(mav):
+    sectors = [65535] * 72
+    sectors[0] = 250
+    msg = _parse(mav, encode_obstacle_distance(0, sectors, 15, 1200, 5.0, seq=0))
+    assert msg.distances[0] == 250 and msg.distances[1] == 65535
+
+
+def test_relay_sends_scan_at_lidar_rate_only_while_fresh():
+    relay = TelemetryRelay(Seq(), start_time=100.0, lidar_rate_hz=1.0)
+
+    def scans(now):
+        return [f for f in _frames(relay.tick(now)) if f.msgid == MSG_ID_OBSTACLE_DISTANCE]
+
+    relay.update_scan(100.0, SECTORS, 15, 1200)
+    assert len(scans(100.0)) == 1
+    relay.update_scan(100.4, SECTORS, 15, 1200)
+    assert scans(100.5) == []  # rate limit: 1 per second
+    relay.update_scan(100.9, SECTORS, 15, 1200)
+    assert len(scans(101.0)) == 1
+    assert scans(103.0) == []  # scan older than 1 s: not sent
+
+
+def test_relay_lidar_off_when_rate_zero():
+    relay = TelemetryRelay(Seq(), start_time=100.0, lidar_rate_hz=0)
+    relay.update_scan(100.0, SECTORS, 15, 1200)
+    assert all(f.msgid != MSG_ID_OBSTACLE_DISTANCE for f in _frames(relay.tick(100.0)))
+
+
+def test_load_with_lidar_at_default_rate():
+    """Everything fresh incl. LiDAR at 1 Hz, telemetry at 2 Hz: under 500 B/s."""
+    relay = _relay()
+    total = 0
+    for k in range(20):
+        now = 100.0 + k * 0.5
+        _fill(relay, now)
+        relay.update_scan(now, SECTORS, 15, 1200)
+        total += sum(len(f) for f in relay.tick(now))
+    assert total / 10.0 < 500

@@ -9,6 +9,7 @@ import ControlsPanel from "./components/ControlsPanel";
 import BatteryPanel from "./components/BatteryPanel";
 import PositionVelocityPanel from "./components/PositionVelocityPanel";
 import GpsPanel from "./components/GpsPanel";
+import LidarPanel from "./components/LidarPanel";
 import AttitudePanel from "./components/AttitudePanel";
 import StatusTextPanel from "./components/StatusTextPanel";
 import MapPanel from "./components/MapPanel";
@@ -111,6 +112,7 @@ export default function App() {
         <ControlsPanel telemetry={telemetry} />
         <BatteryPanel telemetry={telemetry} />
         <PositionVelocityPanel telemetry={telemetry} />
+        <LidarPanel />
         <GpsPanel telemetry={telemetry} />
         <AttitudePanel telemetry={telemetry} />
         <AutonomyPanel telemetry={telemetry} />

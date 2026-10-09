@@ -51,6 +51,7 @@ from .ros_client import (
     FLIGHT_TEST_STATUS_TOPIC,
     HEARTBEAT_TOPIC,
     IMU_TOPIC,
+    LIDAR_TOPIC,
     POSE_TOPIC,
     VALID_COMMANDS,
     VALID_SIMULATION_COMMANDS,
@@ -65,6 +66,8 @@ ATTITUDE_STALE_S = 3.0
 HOVER_VALUES_STALE_S = 3.0
 # The Jetson resends the mission detail every 5 s while there is one.
 MISSION_DETAIL_STALE_S = 12.0
+LIDAR_STALE_S = 5.0
+_UNKNOWN_CM = 0xFFFF
 STATUSTEXT_HISTORY = 20
 _PARTIAL_TEXT_TIMEOUT_S = 5.0
 
@@ -132,6 +135,16 @@ class RadioTelemetryClient:
                 if kind == "HEARTBEAT":
                     self._store("jetson", MISSION_STATE_NAMES.get(msg.custom_mode & 0xFF, "unknown"), now)
                     self._mission_id = MISSION_NAMES_BY_CODE.get((msg.custom_mode >> 8) & 0xFF)
+                elif kind == "OBSTACLE_DISTANCE":
+                    increment = msg.increment_f if msg.increment_f > 0 else float(msg.increment)
+                    self._store("lidar", {
+                        "angle_offset_deg": float(msg.angle_offset),
+                        "increment_deg": increment,
+                        "min_cm": msg.min_distance,
+                        "max_cm": msg.max_distance,
+                        # None = no return in that sector
+                        "distances_cm": [None if d == _UNKNOWN_CM else d for d in msg.distances],
+                    }, now)
                 elif kind == "NAMED_VALUE_FLOAT" and msg.name in HOVER_VALUE_KEYS:
                     self._hover[HOVER_VALUE_KEYS[msg.name]] = (round(msg.value, 2), now)
                 elif kind == "STATUSTEXT":
@@ -222,6 +235,9 @@ class RadioTelemetryClient:
                 return None if orientation is None else {"orientation": orientation}
             if topic == FLIGHT_TEST_STATUS_TOPIC:
                 return self._hover_status()
+            if topic == LIDAR_TOPIC:
+                scan = self._fresh("lidar", LIDAR_STALE_S)
+                return None if scan is None else {**scan, "age_s": round(self._clock() - self._at["lidar"], 1)}
             return None
 
     def _fcu_state(self) -> Optional[dict]:

@@ -35,6 +35,7 @@ from .telem_command_codec import (
     encode_fcu_heartbeat,
     encode_local_position,
     encode_named_value_float,
+    encode_obstacle_distance,
     encode_statustext,
     encode_sys_status,
     statustext_chunks,
@@ -50,15 +51,26 @@ VELOCITY_STALE_S = 1.0
 ATTITUDE_STALE_S = 1.0
 MISSION_STATUS_STALE_S = 3.0
 
+# LiDAR: one OBSTACLE_DISTANCE (~180 bytes) per period, only while scans are fresh.
+DEFAULT_LIDAR_RATE_HZ = 1.0
+SCAN_STALE_S = 1.0
+LIDAR_SECTOR_DEG = 5.0
+
 STATUSTEXT_PER_TICK = 2
 STATUSTEXT_QUEUE = 20
 MISSION_DETAIL_RESEND_S = 5.0
 
 
 class TelemetryRelay:
-    def __init__(self, next_seq: Callable[[], int], start_time: float) -> None:
+    def __init__(
+        self, next_seq: Callable[[], int], start_time: float, lidar_rate_hz: float = DEFAULT_LIDAR_RATE_HZ
+    ) -> None:
         self._next_seq = next_seq
         self._start = start_time
+        self._lidar_period = 1.0 / lidar_rate_hz if lidar_rate_hz > 0 else None
+        self._scan: Optional[Tuple[List[int], int, int]] = None  # sectors, min_cm, max_cm
+        self._scan_at: Optional[float] = None
+        self._last_scan_sent: Optional[float] = None
         self._last_slow: Optional[float] = None
 
         self._fcu: Optional[Tuple[bool, bool, bool, Optional[str], int]] = None
@@ -116,6 +128,10 @@ class TelemetryRelay:
             self._mission_detail = detail
             self._mission_detail_sent_at = None  # send on the next tick
 
+    def update_scan(self, now: float, sectors_cm: List[int], min_cm: int, max_cm: int) -> None:
+        self._scan = (list(sectors_cm), int(min_cm), int(max_cm))
+        self._scan_at = now
+
     def add_fcu_statustext(self, severity: int, text: str) -> None:
         if text:
             self._texts.append((int(severity), text, FCU_RELAY_COMPONENT_ID))
@@ -135,6 +151,19 @@ class TelemetryRelay:
         if self._last_slow is None or now - self._last_slow >= SLOW_PERIOD_S - 1e-6:
             self._last_slow = now
             frames.extend(self._slow(now, ms))
+
+        if (
+            self._lidar_period is not None
+            and self._fresh(self._scan_at, now, SCAN_STALE_S)
+            and (self._last_scan_sent is None or now - self._last_scan_sent >= self._lidar_period - 1e-6)
+        ):
+            self._last_scan_sent = now
+            sectors, min_cm, max_cm = self._scan
+            frames.append(
+                encode_obstacle_distance(
+                    int((now - self._start) * 1e6), sectors, min_cm, max_cm, LIDAR_SECTOR_DEG, self._next_seq()
+                )
+            )
 
         self._queue_mission_detail(now)
         frames.extend(self._statustext_frames())

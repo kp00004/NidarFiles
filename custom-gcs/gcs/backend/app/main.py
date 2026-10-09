@@ -74,6 +74,7 @@ from .ros_client import (
     GPS_TOPIC,
     HEARTBEAT_TOPIC,
     IMU_TOPIC,
+    LIDAR_TOPIC,
     MAP_TOPIC,
     MISSION_STATE_TOPIC,
     MULTI_STEP_TEST_STATUS_TOPIC,
@@ -104,6 +105,7 @@ from .schemas import (
     FrontiersResponse,
     GpsResponse,
     HealthResponse,
+    LidarResponse,
     MapResponse,
     MappingStatusResponse,
     MissionResponse,
@@ -333,6 +335,13 @@ def create_app(
                 geofence_breached=navigation.get("geofence_breached"),
             ),
         )
+
+    @app.get("/api/lidar", response_model=LidarResponse, tags=["telemetry"])
+    def lidar_scan() -> LidarResponse:
+        scan = ros_client.latest(LIDAR_TOPIC)
+        if not scan:
+            return LidarResponse()
+        return LidarResponse(available=True, **scan)
 
     @app.get("/api/map", response_model=MapResponse, tags=["map"])
     def map_snapshot() -> MapResponse:

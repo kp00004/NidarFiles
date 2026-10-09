@@ -36,6 +36,9 @@ path). Sent by the Jetson, see radio_telemetry.py:
     HEARTBEAT            mission state, as above
     STATUSTEXT           the hover mission's `detail` line, on change
     NAMED_VALUE_FLOAT    hover progress: "hv_alt", "hv_tgt", "hv_dur", "hv_elap"
+    OBSTACLE_DISTANCE    LiDAR (RPLIDAR A2): 72 sectors x 5 deg, nearest
+                         return in cm, clockwise from the nose (BODY_FRD);
+                         only while lidar_node publishes /scan
   from 1/1 (the Pixhawk's state as MAVROS reports it, relayed -- the
   Pixhawk itself is still not on the radio)
     HEARTBEAT            armed / guided (base_mode), ArduCopter mode number
@@ -80,6 +83,7 @@ MSG_ID_COMMAND_LONG = 76
 MSG_ID_COMMAND_ACK = 77
 MSG_ID_NAMED_VALUE_FLOAT = 251
 MSG_ID_STATUSTEXT = 253
+MSG_ID_OBSTACLE_DISTANCE = 330
 CRC_EXTRA = {
     MSG_ID_HEARTBEAT: 50,
     MSG_ID_SYS_STATUS: 124,
@@ -92,6 +96,7 @@ CRC_EXTRA = {
     MSG_ID_COMMAND_ACK: 143,
     MSG_ID_NAMED_VALUE_FLOAT: 170,
     MSG_ID_STATUSTEXT: 83,
+    MSG_ID_OBSTACLE_DISTANCE: 23,
 }
 
 MAV_CMD_USER_1 = 31010
@@ -207,6 +212,11 @@ _LOCAL_POSITION_FMT = "<I6f"  # time_boot_ms, x, y, z, vx, vy, vz
 _ATTITUDE_QUATERNION_FMT = "<I7f"  # time_boot_ms, q1..q4, rollspeed, pitchspeed, yawspeed
 _NAMED_VALUE_FLOAT_FMT = "<If10s"  # time_boot_ms, value, name
 _STATUSTEXT_FMT = "<B50sHB"  # severity, text, id, chunk_seq
+# time_usec, distances[72], min_distance, max_distance, sensor_type, increment,
+# increment_f, angle_offset, frame
+_OBSTACLE_DISTANCE_FMT = "<Q72HHHBBffB"
+MAV_DISTANCE_SENSOR_LASER = 0
+MAV_FRAME_BODY_FRD = 12
 _PARAM_REQUEST_READ_FMT = "<hBB16s"  # param_index, target_system, target_component, param_id
 _PARAM_SET_FMT = "<fBB16sB"  # param_value, target_system, target_component, param_id, param_type
 _PARAM_VALUE_FMT = "<fHH16sB"  # param_value, param_count, param_index, param_id, param_type
@@ -647,3 +657,30 @@ def encode_param_set(name: str, value: float, seq: int, sysid: int = GCS_SYSTEM_
         name.encode("ascii")[:PARAM_ID_LEN], MAV_PARAM_TYPE_REAL32,
     )
     return encode_frame(MSG_ID_PARAM_SET, payload, seq, sysid, compid)
+
+
+
+def encode_obstacle_distance(
+    time_usec: int,
+    distances_cm,
+    min_cm: int,
+    max_cm: int,
+    increment_deg: float,
+    seq: int,
+    angle_offset_deg: float = 0.0,
+    sysid: int = JETSON_SYSTEM_ID,
+    compid: int = JETSON_COMPONENT_ID,
+) -> bytes:
+    """MAVLink OBSTACLE_DISTANCE: 72 distances (cm, 65535 = unknown),
+    element i at angle_offset + i*increment, clockwise from the nose."""
+    distances = list(distances_cm)
+    if len(distances) != 72:
+        raise ValueError("OBSTACLE_DISTANCE needs exactly 72 distances")
+    payload = struct.pack(
+        _OBSTACLE_DISTANCE_FMT,
+        time_usec & 0xFFFFFFFFFFFFFFFF,
+        *[min(max(int(d), 0), 0xFFFF) for d in distances],
+        min_cm, max_cm, MAV_DISTANCE_SENSOR_LASER,
+        int(round(increment_deg)) & 0xFF, float(increment_deg), float(angle_offset_deg), MAV_FRAME_BODY_FRD,
+    )
+    return encode_frame(MSG_ID_OBSTACLE_DISTANCE, payload, seq, sysid, compid)

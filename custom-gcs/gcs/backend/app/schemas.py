@@ -433,3 +433,17 @@ class ParamResponse(BaseModel):
     name: str
     value: float
     attempts: int
+
+
+class LidarResponse(BaseModel):
+    """Live LiDAR scan reduced to sectors (radio: OBSTACLE_DISTANCE from the
+    Jetson). Angles clockwise from the drone's nose; distances_cm[i] is the
+    nearest return at angle_offset_deg + i*increment_deg, None = no return."""
+
+    available: bool = False
+    age_s: float | None = None
+    angle_offset_deg: float = 0.0
+    increment_deg: float = 5.0
+    min_cm: int | None = None
+    max_cm: int | None = None
+    distances_cm: list[int | None] = []

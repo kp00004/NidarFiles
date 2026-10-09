@@ -25,6 +25,8 @@ Parameters:
   dry_run              true = log and ACK, but publish nothing (radio bench test)
   telemetry_rate_hz    position/attitude rate over the radio (default 2.0);
                        0 disables telemetry (commands and heartbeat only)
+  lidar_rate_hz        LiDAR scans (/scan) relayed over the radio per second as
+                       72-sector OBSTACLE_DISTANCE (default 1.0; 0 = off)
   allow_param_write    true = the GCS Setup page may WRITE Pixhawk parameters
                        (bench only, `start_jetson.sh --setup`; refused while
                        armed or a mission runs). Reads are always answered.
@@ -45,12 +47,13 @@ from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import BatteryState, Imu
+from sensor_msgs.msg import BatteryState, Imu, LaserScan
 from std_msgs.msg import String
 
 from .param_bridge_logic import addressed_to_jetson, refusal, typed_value
 from .radio_command_logic import CommandGate, Decision, Readiness
-from .radio_telemetry import DEFAULT_RATE_HZ, TelemetryRelay
+from .radio_telemetry import DEFAULT_LIDAR_RATE_HZ, DEFAULT_RATE_HZ, TelemetryRelay
+from .rplidar_protocol import sectors_from_laserscan
 from .telem_command_codec import (
     JETSON_COMPONENT_ID,
     JETSON_SYSTEM_ID,
@@ -85,6 +88,7 @@ from .topics import (
     MISSION_SELECT_TOPIC,
     MOTOR_TEST_STATUS_TOPIC,
     RADIO_STATUS_TOPIC,
+    SCAN_TOPIC,
 )
 
 # TODO(hardware): confirm on the Jetson with `ls -l /dev/serial/by-id/`.
@@ -127,6 +131,7 @@ class RadioCommandNode(Node):
             self.declare_parameter("telemetry_rate_hz", DEFAULT_RATE_HZ).value
         )
         self._allow_param_write = bool(self.declare_parameter("allow_param_write", False).value)
+        self._lidar_rate_hz = float(self.declare_parameter("lidar_rate_hz", DEFAULT_LIDAR_RATE_HZ).value)
         self._param_text_id = 0
 
         self._gate = CommandGate()
@@ -147,7 +152,7 @@ class RadioCommandNode(Node):
         self._active_mission = "hover"
         self._last_rx_at: Optional[float] = None
         self._last_command: Optional[dict] = None
-        self._telemetry = TelemetryRelay(self._next_seq, time.monotonic())
+        self._telemetry = TelemetryRelay(self._next_seq, time.monotonic(), self._lidar_rate_hz)
 
         self._command_pub = self.create_publisher(String, COMMAND_TOPIC, 10)
         self._select_pub = self.create_publisher(String, MISSION_SELECT_TOPIC, 10)
@@ -166,6 +171,7 @@ class RadioCommandNode(Node):
         self.create_subscription(TwistStamped, LOCAL_VELOCITY_TOPIC, self._on_velocity, best_effort)
         self.create_subscription(Imu, IMU_TOPIC, self._on_imu, best_effort)
         self.create_subscription(StatusText, FCU_STATUSTEXT_TOPIC, self._on_statustext, best_effort)
+        self.create_subscription(LaserScan, SCAN_TOPIC, self._on_scan, best_effort)
 
         self.create_timer(1.0, self._send_heartbeat_and_status)
         if self._telemetry_rate_hz > 0:
@@ -217,6 +223,14 @@ class RadioCommandNode(Node):
     def _on_imu(self, msg: Imu) -> None:
         q = msg.orientation
         self._telemetry.update_orientation(time.monotonic(), q.w, q.x, q.y, q.z)
+
+    def _on_scan(self, msg: LaserScan) -> None:
+        sectors = sectors_from_laserscan(
+            msg.ranges, msg.angle_min, msg.angle_increment, msg.range_min, msg.range_max
+        )
+        self._telemetry.update_scan(
+            time.monotonic(), sectors, int(msg.range_min * 100), int(msg.range_max * 100)
+        )
 
     def _on_statustext(self, msg: StatusText) -> None:
         self._telemetry.add_fcu_statustext(msg.severity, msg.text)

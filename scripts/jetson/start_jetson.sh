@@ -16,6 +16,8 @@
 #
 # Usage:
 #   start_jetson.sh            full stack (a radio START will fly the hover)
+#   start_jetson.sh --lidar    also run the RPLIDAR A2 and send its scan to the
+#                              GCS over the radio (LiDAR panel)
 #   start_jetson.sh --setup    also let the GCS Setup page write Pixhawk
 #                              parameters (bench only; refused while armed)
 #   start_jetson.sh --dry-run  radio node ACKs and logs but publishes nothing;
@@ -40,14 +42,20 @@ RADIO_BAUD="${NIDAR_RADIO_BAUD:-115200}"
 # low: START/ABORT ACKs share the radio's air time.
 # TODO(hardware): raise only after measuring the radio's real throughput.
 TELEMETRY_RATE_HZ="${NIDAR_TELEMETRY_RATE_HZ:-2.0}"
+# LiDAR (--lidar): scans sent over the radio per second (~180 B each), and the
+# direction of the LiDAR's 0 deg mark relative to the drone's nose (clockwise).
+LIDAR_RATE_HZ="${NIDAR_LIDAR_RATE_HZ:-1.0}"
+LIDAR_YAW_DEG="${NIDAR_LIDAR_YAW_DEG:-0}"
 
 DRY_RUN=false
 SETUP=false
+LIDAR=false
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
     --setup) SETUP=true ;;
-    *) echo "unknown option: $arg (use --dry-run and/or --setup)"; exit 1 ;;
+    --lidar) LIDAR=true ;;
+    *) echo "unknown option: $arg (use --dry-run, --setup, --lidar)"; exit 1 ;;
   esac
 done
 
@@ -81,6 +89,32 @@ source /opt/ros/humble/setup.bash || fail "ROS 2 Humble not found"
 source "$HOME/nidar_ws/install/setup.bash"
 python3 -c "import nidar_autonomy.radio_command_node" 2>/dev/null || fail "nidar_autonomy (with radio_command_node) not importable -- rebuild with setup_jetson.sh"
 set -u
+
+# -- LiDAR port (before anything opens the radio) ------------------------------
+# The RPLIDAR's USB adapter and the radio are both CP2102 with the same serial
+# number, so /dev/serial/by-id can't tell them apart: ask each port which one
+# answers like an RPLIDAR, and give the radio the other port.
+LIDAR_PORT=""
+if $LIDAR; then
+  say "looking for the RPLIDAR on the USB serial ports..."
+  eval "$(python3 -m nidar_autonomy.rplidar_probe)"
+  if [ -z "$LIDAR_PORT" ]; then
+    say "WARNING: no RPLIDAR answered (ports: ${OTHER_PORTS:-none}) -- continuing WITHOUT LiDAR"
+    LIDAR=false
+  else
+    say "RPLIDAR on $LIDAR_PORT @ $LIDAR_BAUD ($LIDAR_INFO)"
+    if [ -z "${NIDAR_RADIO_PORT:-}" ]; then
+      read -r FIRST_OTHER _ <<<"${OTHER_PORTS:-}"
+      if [ -n "${FIRST_OTHER:-}" ]; then
+        RADIO_PORT="$FIRST_OTHER"
+        RADIO_FALLBACK_PORT="$FIRST_OTHER"
+        say "radio -> $RADIO_PORT (the USB serial port that is not the LiDAR)"
+      else
+        say "WARNING: no other USB serial port for the radio"
+      fi
+    fi
+  fi
+fi
 
 # -- safety: one authoritative execution path ----------------------------------
 if pgrep -f "nidar_autonomy/mission_state_node|lib/nidar_autonomy/mission_state_node" >/dev/null; then
@@ -119,9 +153,13 @@ run command_node ros2 run nidar_autonomy command_node
 run heartbeat_node ros2 run nidar_autonomy heartbeat_node
 run radio_command_node ros2 run nidar_autonomy radio_command_node --ros-args \
   -p "serial_port:=$RADIO_PORT" -p "fallback_serial_port:=$RADIO_FALLBACK_PORT" \
-  -p "baud:=$RADIO_BAUD" -p "dry_run:=$DRY_RUN" -p "telemetry_rate_hz:=$TELEMETRY_RATE_HZ"   -p "allow_param_write:=$SETUP"
+  -p "baud:=$RADIO_BAUD" -p "dry_run:=$DRY_RUN" -p "telemetry_rate_hz:=$TELEMETRY_RATE_HZ"   -p "allow_param_write:=$SETUP" -p "lidar_rate_hz:=$LIDAR_RATE_HZ"
 run hover_mission python3 "$NIDAR_DIR/missions/hover/mission.py"
 run motor_test_mission python3 "$NIDAR_DIR/missions/motor_test/mission.py"
+if $LIDAR; then
+  run lidar_node ros2 run nidar_autonomy lidar_node --ros-args \
+    -p "serial_port:=$LIDAR_PORT" -p "baud:=$LIDAR_BAUD" -p "yaw_offset_deg:=$LIDAR_YAW_DEG"
+fi
 
 say "-------------------------------------------------------------------"
 if $SETUP; then
@@ -135,6 +173,8 @@ else
 fi
 say "Ctrl+C stops everything. Following radio + mission logs:"
 say "-------------------------------------------------------------------"
-tail -n +1 -F "$LOG_DIR/radio_command_node.log" "$LOG_DIR/hover_mission.log" "$LOG_DIR/motor_test_mission.log" &
+LOGS=("$LOG_DIR/radio_command_node.log" "$LOG_DIR/hover_mission.log" "$LOG_DIR/motor_test_mission.log")
+$LIDAR && LOGS+=("$LOG_DIR/lidar_node.log")
+tail -n +1 -F "${LOGS[@]}" &
 PIDS+=($!)
 wait
